@@ -1,1 +1,7 @@
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+game_data.db
