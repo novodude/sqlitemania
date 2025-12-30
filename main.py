@@ -3,6 +3,8 @@ import database
 run = True
 menu = True
 play = False
+inventory = False
+selecting_item = False
 player_id = None
 
 
@@ -12,6 +14,11 @@ def loot_init():
     if count < 100:
         for _ in range(100 - count):
             database.init_weapon()
+    database.c.execute("SELECT COUNT(*) FROM armors")
+    count = database.c.fetchone()[0]
+    if count < 100:
+        for _ in range(100 - count):
+            database.init_armor()
 
 
 def new_game():
@@ -78,21 +85,78 @@ while run:
 
     while play:
         print("(1) inventory")
-        print("(2) equipped weapon")
+        print("(2) equipped items")
         print("(3) quit to menu")
         choice = input("> ")
 
         if choice == "1":
-            database.c.execute(
-                "SELECT item, amount FROM inventory WHERE player_id = ?",
-                (player_id,)
-            )
-            items = database.c.fetchall()
-            if not items:
-                print("inventory empty")
-            for i in items:
-                print(i["item"], "x", i["amount"])
+            inventory = True
+            while inventory:
+                database.c.execute(
+                    "SELECT rowid, item, amount FROM inventory WHERE player_id = ?",
+                    (player_id,)
+                )
+                items = database.c.fetchall()
+                database.c.execute(
+                    "SELECT equipped_weapon FROM players WHERE id = ?",
+                    (player_id,)
+                )
+                W_equipped = database.c.fetchone()
+                if not items:
+                    print("inventory empty")
+                for i in items:
+                    if i in items == W_equipped:
+                        print(i["rowid"], i["item"], "x", i["amount"], "equipped")
+                    else:
+                        print(i["rowid"], i["item"], "x", i["amount"])
+                print("(0) to exist")
+                print("choose item by number")
+                choice = int(input("> "))
+                if choice == 0: play = True; inventory = False
+                if choice: selecting_item = True; inventory = False
+                while selecting_item:
+                    selected_item = next((i for i in items if i["rowid"] == choice), None)
+                    if selected_item:
+                        item_name = selected_item["item"]
+                        database.c.execute("SELECT * FROM weapons WHERE name = ?", (item_name,))
+                        weapon_data = database.c.fetchone()
 
+                        print("====================")
+                        print(selected_item["rowid"], selected_item["item"])
+
+                        if weapon_data:
+                            print("| Class:", weapon_data["class_type"], "\t", "|")
+                            print("| Hit Multiplier:", weapon_data["hit_mult"], "\t", "|")
+                            print("| Bonus HP:", weapon_data["bonus_hp"], "\t", "|")
+                            print("| Bonus Hit:", weapon_data["bonus_hit"], "\t", "|")
+                            print("| Bonus Wisdom:", weapon_data["bonus_wisdom"], "\t", "|")
+                            
+                        print("====================")
+                    else:
+                        print("Item not found")
+                    print("(1) use/equip")
+                    print("(2) throw")
+                    print("(3) go back")
+                    print("choose action:")
+                    choice = input("> ")
+                    if choice == "1":
+                        if weapon_data:
+                            database.c.execute("UPDATE players SET equipped_weapon = ? WHERE id = ?", (item_name, player_id))
+                            database.conn.commit()
+                        elif armor_data:
+                            database.c.execute("UPDATE players SET equipped_armor = ? WHERE id = ?", (item_name, player_id))
+                            database.conn.commit()
+
+                        selecting_item = False
+                        inventory = True
+                    elif choice == "2":
+                        database.c.execute("DELETE FROM inventory WHERE rowid = ?", (selected_item["rowid"],))
+                        database.conn.commit()
+                        selecting_item = False
+                        inventory = True
+                    elif choice == "3":
+                        selecting_item = False
+                        inventory = True
         elif choice == "2":
             database.c.execute(
                 "SELECT equipped_weapon FROM players WHERE id = ?",

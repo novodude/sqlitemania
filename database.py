@@ -35,6 +35,8 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
             class_id INTEGER NOT NULL,
+            equipped_armor TEXT,
+            equipped_weapon TEXT,
             level INTEGER DEFAULT 1,
             experience INTEGER DEFAULT 0,
             deaths INTEGER DEFAULT 0,
@@ -82,6 +84,19 @@ def init_db():
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS weapons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            class_type TEXT NOT NULL,
+            hit_mult INTEGER NOT NULL,
+            bonus_hp INTEGER DEFAULT 0,
+            bonus_hit INTEGER DEFAULT 0,
+            bonus_wisdom INTEGER DEFAULT 0,
+            found BOOLEAN DEFAULT 0
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS armors (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             class_type TEXT NOT NULL,
@@ -157,6 +172,29 @@ def starter_weapon(player_id: int):
     c.execute("UPDATE weapons SET found = 1 WHERE id = ?", (chosen[0],))
     add_item(player_id, chosen[1], 1)
 
+def starter_armor(player_id: int):
+    c.execute("SELECT class_id FROM players WHERE id = ?", (player_id,))
+    class_id = c.fetchone()[0]
+
+    c.execute("SELECT name FROM class WHERE id = ?", (class_id,))
+    class_name = c.fetchone()[0]
+
+    c.execute("""
+        SELECT id, name, hit_mult
+        FROM armors
+        WHERE class_type = ? AND found = 0
+    """, (class_name,))
+    armors = c.fetchall()
+
+    if not armors:
+        return
+
+    low_armor = [w for w in armors if w[2] <= 10]
+    chosen = random.choice(low_armor or armors)
+
+    c.execute("UPDATE weapons SET found = 1 WHERE id = ?", (chosen[0],))
+    add_item(player_id, chosen[1], 1)
+
 def init_weapon():
     with open("weapon_name.json", "r") as w:
         data = json.load(w)
@@ -183,6 +221,41 @@ def init_weapon():
 
     c.execute("""
         INSERT INTO weapons (
+            name, class_type, hit_mult,
+            bonus_hp, bonus_hit, bonus_wisdom
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (name, class_type, hit_mult, bonus_hp, bonus_hit, bonus_wisdom))
+
+    conn.commit()
+    return name
+
+def init_armor():
+    with open("armor_name.json", "r") as w:
+        data = json.load(w)
+
+    name = random.choice(data)
+
+    class_type = random.choice(["Warrior", "Rogue", "Mage"])
+
+    if class_type == "Warrior":
+        hit_mult = random.randint(1, 30)
+        bonus_hp = random.randint(300, 500)
+        bonus_hit = random.randint(20, 60)
+        bonus_wisdom = 0
+    elif class_type == "Rogue":
+        hit_mult = random.randint(1, 30)
+        bonus_hp = random.randint(100, 250)
+        bonus_hit = random.randint(30, 50)
+        bonus_wisdom = random.randint(25, 25)
+    else:
+        hit_mult = random.randint(1, 30)
+        bonus_hp = 10
+        bonus_hit = random.randint(5, 20)
+        bonus_wisdom = random.randint(30, 60)
+
+    c.execute("""
+        INSERT INTO armors (
             name, class_type, hit_mult,
             bonus_hp, bonus_hit, bonus_wisdom
         )
@@ -222,7 +295,8 @@ def init_player(username: str, class_name: str):
     """, (player_id, hp, hp, hp, hit, wisdom))
 
     starter_weapon(player_id)
-
+    conn.commit()
+    starter_armor(player_id)
     conn.commit()
     return player_id
 
