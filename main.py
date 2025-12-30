@@ -97,18 +97,28 @@ while run:
                     (player_id,)
                 )
                 items = database.c.fetchall()
+
                 database.c.execute(
                     "SELECT equipped_weapon FROM players WHERE id = ?",
                     (player_id,)
                 )
-                W_equipped = database.c.fetchone()
+                row_1 = database.c.fetchone()
+                equipped_weapon = row_1[0] if row_1 else None
+
+                database.c.execute(
+                    "SELECT equipped_armor FROM players WHERE id = ?",
+                    (player_id,)
+                )
+                row_2 = database.c.fetchone()
+                equipped_armor = row_2[0] if row_2 else None
                 if not items:
                     print("inventory empty")
-                for i in items:
-                    if i in items == W_equipped:
-                        print(i["rowid"], i["item"], "x", i["amount"], "equipped")
+
+                for rowid, item, amount in items:
+                    if item == equipped_weapon or item == equipped_armor:
+                        print(rowid, item, "x", amount, "[EQUIPPED]")
                     else:
-                        print(i["rowid"], i["item"], "x", i["amount"])
+                        print(rowid, item, "x", amount)
                 print("(0) to exist")
                 print("choose item by number")
                 choice = int(input("> "))
@@ -120,6 +130,8 @@ while run:
                         item_name = selected_item["item"]
                         database.c.execute("SELECT * FROM weapons WHERE name = ?", (item_name,))
                         weapon_data = database.c.fetchone()
+                        database.c.execute("SELECT * FROM armors WHERE name = ?", (item_name,))
+                        armor_data = database.c.fetchone()
 
                         print("====================")
                         print(selected_item["rowid"], selected_item["item"])
@@ -134,18 +146,35 @@ while run:
                         print("====================")
                     else:
                         print("Item not found")
-                    print("(1) use/equip")
+                    is_equipped = (
+                        item_name == equipped_weapon
+                        or item_name == equipped_armor
+                    )
+
+                    if is_equipped:
+                        print("(1) unequip")
+                    else:
+                        print("(1) use/equip")
                     print("(2) throw")
                     print("(3) go back")
                     print("choose action:")
                     choice = input("> ")
                     if choice == "1":
+
                         if weapon_data:
-                            database.c.execute("UPDATE players SET equipped_weapon = ? WHERE id = ?", (item_name, player_id))
-                            database.conn.commit()
+                            if equipped_weapon:
+                                database.c.execute("UPDATE players SET equipped_weapon = NULL WHERE id = ?", (player_id,))
+                                database.conn.commit()
+                            else:
+                                database.c.execute("UPDATE players SET equipped_weapon = ? WHERE id = ?", (item_name, player_id))
+                                database.conn.commit()
                         elif armor_data:
-                            database.c.execute("UPDATE players SET equipped_armor = ? WHERE id = ?", (item_name, player_id))
-                            database.conn.commit()
+                            if equipped_armor:
+                                database.c.execute("UPDATE players SET equipped_armor = NULL WHERE id = ?", (player_id,))
+                                database.conn.commit()
+                            else:
+                                database.c.execute("UPDATE players SET equipped_armor = ? WHERE id = ?", (item_name, player_id))
+                                database.conn.commit()
 
                         selecting_item = False
                         inventory = True
