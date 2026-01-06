@@ -1,4 +1,5 @@
 import database
+from database import bonus_calc, BonusType
 
 run = True
 menu = True
@@ -136,13 +137,19 @@ while run:
                         print("====================")
                         print(selected_item["rowid"], selected_item["item"])
 
-                        if weapon_data:
+                        if armor_data:
+                            print("| Class:", armor_data["class_type"], "\t", "|")
+                            print("| Hit Multiplier:", armor_data["hit_mult"], "\t", "|")
+                            print("| Bonus HP:", armor_data["bonus_hp"], "\t", "|")
+                            print("| Bonus Hit:", armor_data["bonus_hit"], "\t", "|")
+                            print("| Bonus Wisdom:", armor_data["bonus_wisdom"], "\t", "|")
+                        elif weapon_data:
                             print("| Class:", weapon_data["class_type"], "\t", "|")
                             print("| Hit Multiplier:", weapon_data["hit_mult"], "\t", "|")
                             print("| Bonus HP:", weapon_data["bonus_hp"], "\t", "|")
                             print("| Bonus Hit:", weapon_data["bonus_hit"], "\t", "|")
                             print("| Bonus Wisdom:", weapon_data["bonus_wisdom"], "\t", "|")
-                            
+
                         print("====================")
                     else:
                         print("Item not found")
@@ -160,21 +167,25 @@ while run:
                     print("choose action:")
                     choice = input("> ")
                     if choice == "1":
-
                         if weapon_data:
-                            if equipped_weapon:
+                            if is_equipped:
+                                database.bonus_calc(database.BonusType.WEAPON, player_id=player_id, remove=True)
                                 database.c.execute("UPDATE players SET equipped_weapon = NULL WHERE id = ?", (player_id,))
                                 database.conn.commit()
                             else:
                                 database.c.execute("UPDATE players SET equipped_weapon = ? WHERE id = ?", (item_name, player_id))
                                 database.conn.commit()
+                                database.bonus_calc(database.BonusType.WEAPON, player_id=player_id)
+                                
                         elif armor_data:
-                            if equipped_armor:
+                            if is_equipped:
+                                database.bonus_calc(database.BonusType.ARMOR, player_id=player_id, remove=True)
                                 database.c.execute("UPDATE players SET equipped_armor = NULL WHERE id = ?", (player_id,))
                                 database.conn.commit()
                             else:
                                 database.c.execute("UPDATE players SET equipped_armor = ? WHERE id = ?", (item_name, player_id))
                                 database.conn.commit()
+                                database.bonus_calc(database.BonusType.ARMOR, player_id=player_id)
 
                         selecting_item = False
                         inventory = True
@@ -192,7 +203,28 @@ while run:
                 (player_id,)
             )
             weapon = database.c.fetchone()["equipped_weapon"]
-            print("equipped:", weapon)
+            database.c.execute(
+                "SELECT equipped_armor FROM players WHERE id = ?",
+                (player_id,)
+            )
+            armor = database.c.fetchone()["equipped_armor"]
+
+            database.c.execute("SELECT * FROM weapons WHERE name = ?", (weapon,))
+            weapon_data = database.c.fetchone()
+            database.c.execute("SELECT * FROM armors WHERE name = ?", (armor,))
+            armor_data = database.c.fetchone()
+
+            print("==================================================")
+            print("weapon:", weapon, "|", "armor:", armor)
+            print("==================================================")
+            print("| Class:", weapon_data["class_type"], "\t", "| Class:", armor_data["class_type"], "\t", "\t",  "|")
+            print("| Hit Multiplier:", weapon_data["hit_mult"], "\t", "| Hit Multiplier:", armor_data["hit_mult"], "\t", "|")
+            print("| Bonus HP:", weapon_data["bonus_hp"], "\t", "| Bonus HP:", armor_data["bonus_hp"], "\t", "|")
+            print("| Bonus Hit:", weapon_data["bonus_hit"], "\t", "| Bonus Hit:", armor_data["bonus_hit"], "\t", "|")
+            print("| Bonus Wisdom:", weapon_data["bonus_wisdom"], "\t", "| Bonus Wisdom:", armor_data["bonus_wisdom"], "\t", "|")
+            print("==================================================")
+
+
 
         elif choice == "3":
             play = False

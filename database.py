@@ -1,6 +1,7 @@
 import sqlite3 as sql
 import json
 import random
+from enum import Enum
 
 DB_PATH = "game_data.db"
 
@@ -8,6 +9,11 @@ conn = sql.connect(DB_PATH)
 conn.row_factory = sql.Row
 c = conn.cursor()
 
+class BonusType(Enum):
+    WEAPON = "weapon"
+    ARMOR = "armor"
+    POTION = "potion"
+    ENV = "env"
 
 def init_db():
     c.execute("""
@@ -192,7 +198,7 @@ def starter_armor(player_id: int):
     low_armor = [w for w in armors if w[2] <= 10]
     chosen = random.choice(low_armor or armors)
 
-    c.execute("UPDATE weapons SET found = 1 WHERE id = ?", (chosen[0],))
+    c.execute("UPDATE armors SET found = 1 WHERE id = ?", (chosen[0],))
     add_item(player_id, chosen[1], 1)
 
 def init_weapon():
@@ -295,9 +301,140 @@ def init_player(username: str, class_name: str):
     """, (player_id, hp, hp, hp, hit, wisdom))
 
     starter_weapon(player_id)
-    conn.commit()
     starter_armor(player_id)
     conn.commit()
+    
     return player_id
+
+
+def bonus_calc(bonus_type: BonusType, player_id: int, remove: bool = False):
+    c.execute("SELECT class_id FROM players WHERE id = ?", (player_id,))
+    class_id = c.fetchone()[0]
+    
+    if class_id == 1:
+        user_class_type = "Warrior"
+    elif class_id == 2:
+        user_class_type = "Mage"
+    elif class_id == 3:
+        user_class_type = "Rogue"
+    
+    multiplier = -1 if remove else 1
+    
+    if bonus_type is BonusType.WEAPON:
+        c.execute("SELECT equipped_weapon FROM players WHERE id = ?", (player_id,))
+        weapon = c.fetchone()[0]
+        
+        if weapon is None:
+            return
+        
+        c.execute("SELECT * FROM weapons WHERE name = ?", (weapon,))
+        weapon_data = c.fetchone()
+        
+        if weapon_data is None:
+            return
+        
+        hit_mult = weapon_data["hit_mult"]
+        bonus_hp = weapon_data["bonus_hp"] * multiplier
+        bonus_hit = weapon_data["bonus_hit"] * multiplier
+        bonus_wisdom = weapon_data["bonus_wisdom"] * multiplier
+        
+        if weapon_data["class_type"] == user_class_type:
+            if user_class_type == "Warrior":
+                bonus_hp *= 2
+            elif user_class_type == "Mage":
+                bonus_wisdom *= 2
+            elif user_class_type == "Rogue":
+                bonus_hit = bonus_hit * 2 + (20 * multiplier)
+        
+        if not remove:
+            c.execute("""
+                UPDATE player_stats
+                SET base_hit = base_hit * ?
+                WHERE player_id = ?
+            """, (hit_mult, player_id))
+        else:
+            c.execute("""
+                UPDATE player_stats
+                SET base_hit = base_hit / ?
+                WHERE player_id = ?
+            """, (hit_mult, player_id))
+        
+        c.execute("""
+            UPDATE player_stats
+            SET
+                bonus_hp = bonus_hp + ?,
+                bonus_hit = bonus_hit + ?,
+                bonus_wisdom = bonus_wisdom + ?
+            WHERE player_id = ?
+        """, (bonus_hp, bonus_hit, bonus_wisdom, player_id))
+        
+        c.execute("""
+            UPDATE player_stats
+            SET max_hp = base_hp + bonus_hp
+            WHERE player_id = ?
+        """, (player_id,))
+        
+    elif bonus_type is BonusType.ARMOR:
+        c.execute("SELECT equipped_armor FROM players WHERE id = ?", (player_id,))
+        armor = c.fetchone()[0]
+        
+        if armor is None:
+            return
+        
+        c.execute("SELECT * FROM armors WHERE name = ?", (armor,))
+        armor_data = c.fetchone()
+        
+        if armor_data is None:
+            return
+        
+        hit_mult = armor_data["hit_mult"]
+        bonus_hp = armor_data["bonus_hp"] * multiplier
+        bonus_hit = armor_data["bonus_hit"] * multiplier
+        bonus_wisdom = armor_data["bonus_wisdom"] * multiplier
+        
+        if armor_data["class_type"] == user_class_type:
+            if user_class_type == "Warrior":
+                bonus_hp *= 2
+            elif user_class_type == "Mage":
+                bonus_wisdom *= 2
+            elif user_class_type == "Rogue":
+                bonus_hit = bonus_hit * 2 + (20 * multiplier)
+        
+        if not remove:
+            c.execute("""
+                UPDATE player_stats
+                SET base_hit = base_hit * ?
+                WHERE player_id = ?
+            """, (hit_mult, player_id))
+        else:
+            c.execute("""
+                UPDATE player_stats
+                SET base_hit = base_hit / ?
+                WHERE player_id = ?
+            """, (hit_mult, player_id))
+        
+        c.execute("""
+            UPDATE player_stats
+            SET
+                bonus_hp = bonus_hp + ?,
+                bonus_hit = bonus_hit + ?,
+                bonus_wisdom = bonus_wisdom + ?
+            WHERE player_id = ?
+        """, (bonus_hp, bonus_hit, bonus_wisdom, player_id))
+        
+        c.execute("""
+            UPDATE player_stats
+            SET max_hp = base_hp + bonus_hp
+            WHERE player_id = ?
+        """, (player_id,))
+        
+    elif bonus_type is BonusType.POTION:
+        pass
+    elif bonus_type is BonusType.ENV:
+        pass
+    
+    conn.commit()
+
+
 
 
