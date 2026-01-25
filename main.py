@@ -214,6 +214,27 @@ while run:
             database.c.execute("SELECT * FROM armors WHERE name = ?", (armor,))
             armor_data = database.c.fetchone()
 
+            if armor_data == None:
+                armor = "nothing"
+                armor_data = {
+                    'class_type': 'none',
+                    'hit_mult': 0,
+                    'bonus_hp': 0,
+                    'bonus_hit': 0,
+                    'bonus_wisdom': 0,
+                }
+
+            if weapon_data == None:
+                weapon = "nothing"
+                weapon_data = {
+                    'class_type': 'none',
+                    'hit_mult': 0,
+                    'bonus_hp': 0,
+                    'bonus_hit': 0,
+                    'bonus_wisdom': 0,
+                }
+
+
             print("==================================================")
             print("weapon:", weapon, "|", "armor:", armor)
             print("==================================================")
