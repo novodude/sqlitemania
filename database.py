@@ -85,6 +85,7 @@ def init_db():
             base_hit INTEGER DEFAULT 10,
             weapon TEXT,
             experience_drop INTEGER
+            is_dead BOOLEAN DEFAULT 0
         )
     """)
 
@@ -123,6 +124,37 @@ def init_db():
         END;
     """)
 
+    # table of enchounter types
+    # 0 - shop
+    # 1 - compat
+    # 2 - dungeon
+    # 3 - cave
+    # 4 - forest
+    # 5 - boss
+    #
+    # level_ranges
+    #
+    # 0 for level 1-10
+    # 1 for level 11-20
+    # 2 for level 21-30
+    # 3 for level 31-40
+    # 4 for level 41-50
+    # 5 for level 51-60
+    # 6 for level 61-70
+    # 7 for level 71-80
+    # 8 for level 81-90
+    # 9 for level 91-100
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS map(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT,
+        encounter_type INTEGER NOT NULL,
+        level_range INTEGER NOT NULL,
+        finished BOOLEAN DEFAULT 0
+    )
+    """)
+
     conn.commit()
 
 
@@ -140,6 +172,19 @@ def init_classes():
 
     conn.commit()
 
+def loot_init():
+    """Ensure the weapon and armor tables are populated with at least 100 entries each."""
+    c.execute("SELECT COUNT(*) FROM weapons")
+    count = c.fetchone()[0]
+    if count < 100:
+        for _ in range(100 - count):
+            init_weapon()
+
+    c.execute("SELECT COUNT(*) FROM armors")
+    count = c.fetchone()[0]
+    if count < 100:
+        for _ in range(100 - count):
+            init_armor()
 
 def add_item(player_id: int, item: str, amount: int = 1):
     c.execute("""
@@ -270,6 +315,92 @@ def init_armor():
 
     conn.commit()
     return name
+
+def init_map():
+# Distribution per level range (total = 50)
+    DISTRIBUTION = {
+        0: 5,   # shop
+        1: 30,  # combat
+        2: 5,   # dungeon
+        3: 5,   # cave
+        4: 3,   # forest
+        5: 2    # boss
+    }
+
+    LOW_ADJ = ["Quiet", "Small", "Dusty", "Worn", "Faded"]
+    MID_ADJ = ["Savage", "Shadowed", "Ancient", "Ruthless", "Cursed"]
+    HIGH_ADJ = ["Mythic", "Abyssal", "Cataclysmic", "Eternal", "Godslayer"]
+
+    CREATURES = ["Goblins", "Bandits", "Wolves", "Skeletons", "Cultists", "Knights"]
+    BOSSES = ["Warlord", "Overseer", "Tyrant", "Behemoth", "Archmage"]
+    PLACES = ["Ruins", "Sanctum", "Fortress", "Temple", "Stronghold"]
+    CAVE_TYPES = ["Crystal Cavern", "Molten Depths", "Frozen Hollow", "Echoing Cave"]
+    FOREST_TYPES = ["Whispering Woods", "Twilight Grove", "Rotwood Forest", "Bloodleaf Wilds"]
+
+    def get_adjectives(level_range):
+        if level_range <= 2:
+            return LOW_ADJ
+        elif level_range <= 6:
+            return MID_ADJ
+        return HIGH_ADJ
+
+    def generate_name(encounter_type, level_range):
+        adj = random.choice(get_adjectives(level_range))
+
+        if encounter_type == 0:
+            return f"{adj} Traveling Merchant"
+        if encounter_type == 1:
+            return f"{adj} {random.choice(CREATURES)}"
+        if encounter_type == 2:
+            return f"{adj} {random.choice(PLACES)}"
+        if encounter_type == 3:
+            return f"{adj} {random.choice(CAVE_TYPES)}"
+        if encounter_type == 4:
+            return f"{adj} {random.choice(FOREST_TYPES)}"
+        if encounter_type == 5:
+            return f"{adj} {random.choice(BOSSES)}"
+
+    def generate_description(encounter_type, level_range):
+        min_lvl = level_range * 10 + 1
+        max_lvl = (level_range + 1) * 10
+
+        if encounter_type == 0:
+            return f"A merchant offering gear suitable for adventurers level {min_lvl}-{max_lvl}."
+        if encounter_type == 1:
+            return f"Hostile enemies scaled for fighters level {min_lvl}-{max_lvl}."
+        if encounter_type == 2:
+            return f"A dangerous dungeon filled with traps and enemies level {min_lvl}-{max_lvl}."
+        if encounter_type == 3:
+            return f"A dark cave hiding creatures around level {min_lvl}-{max_lvl}."
+        if encounter_type == 4:
+            return f"A dense forest crawling with threats level {min_lvl}-{max_lvl}."
+        if encounter_type == 5:
+            return f"A powerful boss encounter meant for heroes level {min_lvl}-{max_lvl}."
+
+    rows = []
+
+    for level_range in range(10):
+        for encounter_type, amount in DISTRIBUTION.items():
+            for _ in range(amount):
+                name = generate_name(encounter_type, level_range)
+                description = generate_description(encounter_type, level_range)
+
+                rows.append((
+                    name,
+                    description,
+                    encounter_type,
+                    level_range,
+                    0
+                ))
+
+    c.executemany("""
+    INSERT INTO map (name, description, encounter_type, level_range, finished)
+    VALUES (?, ?, ?, ?, ?)
+    """, rows)
+
+    conn.commit()
+    conn.close()
+    
 
 def init_player(username: str, class_name: str):
     c.execute("""
@@ -435,6 +566,88 @@ def bonus_calc(bonus_type: BonusType, player_id: int, remove: bool = False):
     
     conn.commit()
 
+def generate_enemy(player_id: int):
+    c.execute("""
+        SELECT level
+        FROM players
+        WHERE id = ?
+    """, (player_id,))
+    player_level = c.fetchone()[0]
+    
+    enemy_types = ["Goblin", "Skeleton", "Orc", "Troll", "Bandit"]
+    enemy_type = random.choice(enemy_types)
+    
+    base_hp = 50 + (player_level * 10) + random.randint(-10, 10)
+    base_hit = 5 + (player_level * 2) + random.randint(-2, 2)
+    experience_drop = 20 + (player_level * 5) + random.randint(-5, 5)
+    
+    c.execute("""
+        INSERT INTO enemies (type, base_hp, base_hit, experience_drop)
+        VALUES (?, ?, ?, ?)
+    """, (enemy_type, base_hp, base_hit, experience_drop))
+    
+    conn.commit()
+    return c.lastrowid
 
+def enemy_attack(player_id: int, enemy_id: int):
+    damage_to_enemy, damage_to_player = calculate_damage(player_id, enemy_id)
+    
+    c.execute("""
+        UPDATE player_stats
+        SET current_hp = current_hp - ?
+        WHERE player_id = ?
+    """, (damage_to_player, player_id))
+    
+    c.execute("""
+        UPDATE enemies
+        SET base_hp = base_hp - ?
+        WHERE id = ?
+    """, (damage_to_enemy, enemy_id))
 
+    conn.commit()
+
+def check_combat_outcome(player_id: int, enemy_id: int):
+    c.execute("""
+        SELECT current_hp
+        FROM player_stats
+        WHERE player_id = ?
+    """, (player_id,))
+    player_hp = c.fetchone()[0]
+    
+    c.execute("""
+        SELECT base_hp
+        FROM enemies
+        WHERE id = ?
+    """, (enemy_id,))
+    enemy_hp = c.fetchone()[0]
+    
+    if player_hp <= 0 and enemy_hp <= 0:
+        return "draw"
+    elif player_hp <= 0:
+        return "enemy_win"
+    elif enemy_hp <= 0:
+        return "player_win"
+    else:
+        return "ongoing"
+
+def calculate_damage(player_id: int, enemy_id: int):
+    c.execute("""
+        SELECT base_hit, bonus_hit
+        FROM player_stats
+        WHERE player_id = ?
+    """, (player_id,))
+    player_stats = c.fetchone()
+    player_hit = player_stats["base_hit"] + player_stats["bonus_hit"]
+    
+    c.execute("""
+        SELECT base_hit
+        FROM enemies
+        WHERE id = ?
+    """, (enemy_id,))
+    enemy_hit = c.fetchone()[0]
+    
+    damage_to_enemy = max(0, player_hit - random.randint(0, 5))
+    damage_to_player = max(0, enemy_hit - random.randint(0, 5))
+    
+    return damage_to_enemy, damage_to_player
 
