@@ -84,7 +84,7 @@ def init_db():
             base_hp INTEGER DEFAULT 80,
             base_hit INTEGER DEFAULT 10,
             weapon TEXT,
-            experience_drop INTEGER
+            experience_drop INTEGER,
             is_dead BOOLEAN DEFAULT 0
         )
     """)
@@ -124,26 +124,16 @@ def init_db():
         END;
     """)
 
-    # table of enchounter types
-    # 0 - shop
-    # 1 - compat
-    # 2 - dungeon
-    # 3 - cave
-    # 4 - forest
-    # 5 - boss
+    # Encounter types stored in the map table:
+    # 0 - TRANSACTION (shop)
+    # 1 - QUERY       (combat)
+    # 2 - STORED_PROCEDURE (dungeon)
+    # 3 - DEADLOCK    (cave)
+    # 4 - CONSTRAINT  (forest / events)
+    # 5 - OVERFLOW    (boss)
     #
-    # level_ranges
-    #
-    # 0 for level 1-10
-    # 1 for level 11-20
-    # 2 for level 21-30
-    # 3 for level 31-40
-    # 4 for level 41-50
-    # 5 for level 51-60
-    # 6 for level 61-70
-    # 7 for level 71-80
-    # 8 for level 81-90
-    # 9 for level 91-100
+    # level_ranges:
+    # 0 = level 1-10  ... 9 = level 91-100
     c.execute("""
     CREATE TABLE IF NOT EXISTS map(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -159,10 +149,11 @@ def init_db():
 
 
 def init_classes():
+    # Class names are database operation archetypes
     classes = [
-        ("Warrior", 120, 15, 5),
-        ("Mage", 70, 5, 20),
-        ("Rogue", 90, 12, 10),
+        ("The Executor", 120, 15, 5),   # Warrior archetype — brute force
+        ("The Indexer",  70,  5, 20),   # Mage archetype   — precision and knowledge
+        ("The Trigger",  90, 12, 10),   # Rogue archetype  — reacts instantly to events
     ]
 
     c.executemany("""
@@ -171,6 +162,7 @@ def init_classes():
     """, classes)
 
     conn.commit()
+
 
 def loot_init():
     """Ensure the weapon and armor tables are populated with at least 100 entries each."""
@@ -185,6 +177,7 @@ def loot_init():
     if count < 100:
         for _ in range(100 - count):
             init_armor()
+
 
 def add_item(player_id: int, item: str, amount: int = 1):
     c.execute("""
@@ -201,6 +194,7 @@ def remove_item(player_id: int, item: str):
 
 
 def starter_weapon(player_id: int):
+    """Give the player a low-tier weapon matching their class."""
     c.execute("SELECT class_id FROM players WHERE id = ?", (player_id,))
     class_id = c.fetchone()[0]
 
@@ -223,7 +217,9 @@ def starter_weapon(player_id: int):
     c.execute("UPDATE weapons SET found = 1 WHERE id = ?", (chosen[0],))
     add_item(player_id, chosen[1], 1)
 
+
 def starter_armor(player_id: int):
+    """Give the player a low-tier armor matching their class."""
     c.execute("SELECT class_id FROM players WHERE id = ?", (player_id,))
     class_id = c.fetchone()[0]
 
@@ -246,28 +242,31 @@ def starter_armor(player_id: int):
     c.execute("UPDATE armors SET found = 1 WHERE id = ?", (chosen[0],))
     add_item(player_id, chosen[1], 1)
 
+
 def init_weapon():
+    """INSERT a randomly generated weapon row into the weapons table."""
     with open("weapon_name.json", "r") as w:
         data = json.load(w)
 
     name = f"{random.choice(data['first_name'])} {random.choice(data['second_name'])}"
 
-    class_type = random.choice(["Warrior", "Rogue", "Mage"])
+    # Class type determines stat distribution
+    class_type = random.choice(["The Executor", "The Trigger", "The Indexer"])
 
-    if class_type == "Warrior":
-        hit_mult = random.randint(1, 30)
-        bonus_hp = random.randint(300, 500)
-        bonus_hit = random.randint(20, 60)
+    if class_type == "The Executor":
+        hit_mult     = random.randint(1, 30)
+        bonus_hp     = random.randint(300, 500)
+        bonus_hit    = random.randint(20, 60)
         bonus_wisdom = random.randint(0, 10)
-    elif class_type == "Rogue":
-        hit_mult = random.randint(1, 30)
-        bonus_hp = random.randint(100, 250)
-        bonus_hit = random.randint(30, 50)
+    elif class_type == "The Trigger":
+        hit_mult     = random.randint(1, 30)
+        bonus_hp     = random.randint(100, 250)
+        bonus_hit    = random.randint(30, 50)
         bonus_wisdom = random.randint(25, 25)
-    else:
-        hit_mult = random.randint(1, 30)
-        bonus_hp = random.randint(20, 100)
-        bonus_hit = random.randint(5, 20)
+    else:  # The Indexer
+        hit_mult     = random.randint(1, 30)
+        bonus_hp     = random.randint(20, 100)
+        bonus_hit    = random.randint(5, 20)
         bonus_wisdom = random.randint(30, 60)
 
     c.execute("""
@@ -281,28 +280,30 @@ def init_weapon():
     conn.commit()
     return name
 
+
 def init_armor():
+    """INSERT a randomly generated armor row into the armors table."""
     with open("armor_name.json", "r") as w:
         data = json.load(w)
 
     name = random.choice(data)
 
-    class_type = random.choice(["Warrior", "Rogue", "Mage"])
+    class_type = random.choice(["The Executor", "The Trigger", "The Indexer"])
 
-    if class_type == "Warrior":
-        hit_mult = random.randint(1, 30)
-        bonus_hp = random.randint(300, 500)
-        bonus_hit = random.randint(20, 60)
+    if class_type == "The Executor":
+        hit_mult     = random.randint(1, 30)
+        bonus_hp     = random.randint(300, 500)
+        bonus_hit    = random.randint(20, 60)
         bonus_wisdom = 0
-    elif class_type == "Rogue":
-        hit_mult = random.randint(1, 30)
-        bonus_hp = random.randint(100, 250)
-        bonus_hit = random.randint(30, 50)
+    elif class_type == "The Trigger":
+        hit_mult     = random.randint(1, 30)
+        bonus_hp     = random.randint(100, 250)
+        bonus_hit    = random.randint(30, 50)
         bonus_wisdom = random.randint(25, 25)
-    else:
-        hit_mult = random.randint(1, 30)
-        bonus_hp = 10
-        bonus_hit = random.randint(5, 20)
+    else:  # The Indexer
+        hit_mult     = random.randint(1, 30)
+        bonus_hp     = 10
+        bonus_hit    = random.randint(5, 20)
         bonus_wisdom = random.randint(30, 60)
 
     c.execute("""
@@ -316,25 +317,28 @@ def init_armor():
     conn.commit()
     return name
 
+
 def init_map():
-# Distribution per level range (total = 50)
+    """Procedurally INSERT 500 encounter nodes into the map table."""
+
+    # How many of each encounter type per level range (total = 50)
     DISTRIBUTION = {
-        0: 5,   # shop
-        1: 30,  # combat
-        2: 5,   # dungeon
-        3: 5,   # cave
-        4: 3,   # forest
-        5: 2    # boss
+        0: 5,   # TRANSACTION (shop)
+        1: 30,  # QUERY       (combat)
+        2: 5,   # STORED_PROCEDURE (dungeon)
+        3: 5,   # DEADLOCK    (cave)
+        4: 3,   # CONSTRAINT  (forest)
+        5: 2    # OVERFLOW    (boss)
     }
 
-    LOW_ADJ = ["Quiet", "Small", "Dusty", "Worn", "Faded"]
-    MID_ADJ = ["Savage", "Shadowed", "Ancient", "Ruthless", "Cursed"]
+    LOW_ADJ  = ["Quiet", "Small", "Dusty", "Worn", "Faded"]
+    MID_ADJ  = ["Savage", "Shadowed", "Ancient", "Ruthless", "Cursed"]
     HIGH_ADJ = ["Mythic", "Abyssal", "Cataclysmic", "Eternal", "Godslayer"]
 
-    CREATURES = ["Goblins", "Bandits", "Wolves", "Skeletons", "Cultists", "Knights"]
-    BOSSES = ["Warlord", "Overseer", "Tyrant", "Behemoth", "Archmage"]
-    PLACES = ["Ruins", "Sanctum", "Fortress", "Temple", "Stronghold"]
-    CAVE_TYPES = ["Crystal Cavern", "Molten Depths", "Frozen Hollow", "Echoing Cave"]
+    CREATURES   = ["Goblins", "Bandits", "Wolves", "Skeletons", "Cultists", "Knights"]
+    BOSSES      = ["Warlord", "Overseer", "Tyrant", "Behemoth", "Archmage"]
+    PLACES      = ["Ruins", "Sanctum", "Fortress", "Temple", "Stronghold"]
+    CAVE_TYPES  = ["Crystal Cavern", "Molten Depths", "Frozen Hollow", "Echoing Cave"]
     FOREST_TYPES = ["Whispering Woods", "Twilight Grove", "Rotwood Forest", "Bloodleaf Wilds"]
 
     def get_adjectives(level_range):
@@ -346,63 +350,45 @@ def init_map():
 
     def generate_name(encounter_type, level_range):
         adj = random.choice(get_adjectives(level_range))
-
-        if encounter_type == 0:
-            return f"{adj} Traveling Merchant"
-        if encounter_type == 1:
-            return f"{adj} {random.choice(CREATURES)}"
-        if encounter_type == 2:
-            return f"{adj} {random.choice(PLACES)}"
-        if encounter_type == 3:
-            return f"{adj} {random.choice(CAVE_TYPES)}"
-        if encounter_type == 4:
-            return f"{adj} {random.choice(FOREST_TYPES)}"
-        if encounter_type == 5:
-            return f"{adj} {random.choice(BOSSES)}"
+        if encounter_type == 0: return f"{adj} Traveling Merchant"
+        if encounter_type == 1: return f"{adj} {random.choice(CREATURES)}"
+        if encounter_type == 2: return f"{adj} {random.choice(PLACES)}"
+        if encounter_type == 3: return f"{adj} {random.choice(CAVE_TYPES)}"
+        if encounter_type == 4: return f"{adj} {random.choice(FOREST_TYPES)}"
+        if encounter_type == 5: return f"{adj} {random.choice(BOSSES)}"
 
     def generate_description(encounter_type, level_range):
         min_lvl = level_range * 10 + 1
         max_lvl = (level_range + 1) * 10
-
-        if encounter_type == 0:
-            return f"A merchant offering gear suitable for adventurers level {min_lvl}-{max_lvl}."
-        if encounter_type == 1:
-            return f"Hostile enemies scaled for fighters level {min_lvl}-{max_lvl}."
-        if encounter_type == 2:
-            return f"A dangerous dungeon filled with traps and enemies level {min_lvl}-{max_lvl}."
-        if encounter_type == 3:
-            return f"A dark cave hiding creatures around level {min_lvl}-{max_lvl}."
-        if encounter_type == 4:
-            return f"A dense forest crawling with threats level {min_lvl}-{max_lvl}."
-        if encounter_type == 5:
-            return f"A powerful boss encounter meant for heroes level {min_lvl}-{max_lvl}."
+        if encounter_type == 0: return f"A TRANSACTION node. A merchant offering gear for adventurers level {min_lvl}-{max_lvl}."
+        if encounter_type == 1: return f"A QUERY node. Hostile enemies scaled for fighters level {min_lvl}-{max_lvl}."
+        if encounter_type == 2: return f"A STORED_PROCEDURE node. A dungeon with scripted traps and enemies level {min_lvl}-{max_lvl}."
+        if encounter_type == 3: return f"A DEADLOCK node. A dark cave where two forces collide around level {min_lvl}-{max_lvl}."
+        if encounter_type == 4: return f"A CONSTRAINT node. A forest where the world pushes back, level {min_lvl}-{max_lvl}."
+        if encounter_type == 5: return f"An OVERFLOW node. A boss encounter for heroes level {min_lvl}-{max_lvl}."
 
     rows = []
-
     for level_range in range(10):
         for encounter_type, amount in DISTRIBUTION.items():
             for _ in range(amount):
-                name = generate_name(encounter_type, level_range)
-                description = generate_description(encounter_type, level_range)
-
                 rows.append((
-                    name,
-                    description,
+                    generate_name(encounter_type, level_range),
+                    generate_description(encounter_type, level_range),
                     encounter_type,
                     level_range,
                     0
                 ))
 
     c.executemany("""
-    INSERT INTO map (name, description, encounter_type, level_range, finished)
-    VALUES (?, ?, ?, ?, ?)
+        INSERT INTO map (name, description, encounter_type, level_range, finished)
+        VALUES (?, ?, ?, ?, ?)
     """, rows)
 
     conn.commit()
-    conn.close()
-    
+
 
 def init_player(username: str, class_name: str):
+    """INSERT a new player row and their starting stats, weapon, and armor."""
     c.execute("""
         SELECT id, base_hp, base_hit, base_wisdom
         FROM class
@@ -411,7 +397,7 @@ def init_player(username: str, class_name: str):
     class_data = c.fetchone()
 
     if not class_data:
-        raise ValueError("Class does not exist")
+        raise ValueError(f"Class '{class_name}' does not exist")
 
     class_id, hp, hit, wisdom = class_data
 
@@ -434,170 +420,143 @@ def init_player(username: str, class_name: str):
     starter_weapon(player_id)
     starter_armor(player_id)
     conn.commit()
-    
+
     return player_id
 
 
 def bonus_calc(bonus_type: BonusType, player_id: int, remove: bool = False):
+    """Apply or remove stat bonuses when equipping/unequipping gear.
+    Class-matching gear fires an additional class bonus on top."""
+
     c.execute("SELECT class_id FROM players WHERE id = ?", (player_id,))
     class_id = c.fetchone()[0]
-    
-    if class_id == 1:
-        user_class_type = "Warrior"
-    elif class_id == 2:
-        user_class_type = "Mage"
-    elif class_id == 3:
-        user_class_type = "Rogue"
-    
+
+    # Map class_id back to class name
+    c.execute("SELECT name FROM class WHERE id = ?", (class_id,))
+    user_class_type = c.fetchone()[0]
+
     multiplier = -1 if remove else 1
-    
+
     if bonus_type is BonusType.WEAPON:
         c.execute("SELECT equipped_weapon FROM players WHERE id = ?", (player_id,))
         weapon = c.fetchone()[0]
-        
         if weapon is None:
             return
-        
+
         c.execute("SELECT * FROM weapons WHERE name = ?", (weapon,))
         weapon_data = c.fetchone()
-        
         if weapon_data is None:
             return
-        
-        hit_mult = weapon_data["hit_mult"]
-        bonus_hp = weapon_data["bonus_hp"] * multiplier
-        bonus_hit = weapon_data["bonus_hit"] * multiplier
+
+        hit_mult     = weapon_data["hit_mult"]
+        bonus_hp     = weapon_data["bonus_hp"]     * multiplier
+        bonus_hit    = weapon_data["bonus_hit"]    * multiplier
         bonus_wisdom = weapon_data["bonus_wisdom"] * multiplier
-        
+
+        # Class bonus — fires only when gear matches player class
         if weapon_data["class_type"] == user_class_type:
-            if user_class_type == "Warrior":
+            if user_class_type == "The Executor":
                 bonus_hp *= 2
-            elif user_class_type == "Mage":
+            elif user_class_type == "The Indexer":
                 bonus_wisdom *= 2
-            elif user_class_type == "Rogue":
+            elif user_class_type == "The Trigger":
                 bonus_hit = bonus_hit * 2 + (20 * multiplier)
-        
+
+        # hit_mult scales base_hit multiplicatively
         if not remove:
-            c.execute("""
-                UPDATE player_stats
-                SET base_hit = base_hit * ?
-                WHERE player_id = ?
-            """, (hit_mult, player_id))
+            c.execute("UPDATE player_stats SET base_hit = base_hit * ? WHERE player_id = ?", (hit_mult, player_id))
         else:
-            c.execute("""
-                UPDATE player_stats
-                SET base_hit = base_hit / ?
-                WHERE player_id = ?
-            """, (hit_mult, player_id))
-        
+            c.execute("UPDATE player_stats SET base_hit = base_hit / ? WHERE player_id = ?", (hit_mult, player_id))
+
         c.execute("""
             UPDATE player_stats
-            SET
-                bonus_hp = bonus_hp + ?,
+            SET bonus_hp = bonus_hp + ?,
                 bonus_hit = bonus_hit + ?,
                 bonus_wisdom = bonus_wisdom + ?
             WHERE player_id = ?
         """, (bonus_hp, bonus_hit, bonus_wisdom, player_id))
-        
-        c.execute("""
-            UPDATE player_stats
-            SET max_hp = base_hp + bonus_hp
-            WHERE player_id = ?
-        """, (player_id,))
-        
+
+        c.execute("UPDATE player_stats SET max_hp = base_hp + bonus_hp WHERE player_id = ?", (player_id,))
+
     elif bonus_type is BonusType.ARMOR:
         c.execute("SELECT equipped_armor FROM players WHERE id = ?", (player_id,))
         armor = c.fetchone()[0]
-        
         if armor is None:
             return
-        
+
         c.execute("SELECT * FROM armors WHERE name = ?", (armor,))
         armor_data = c.fetchone()
-        
         if armor_data is None:
             return
-        
-        hit_mult = armor_data["hit_mult"]
-        bonus_hp = armor_data["bonus_hp"] * multiplier
-        bonus_hit = armor_data["bonus_hit"] * multiplier
+
+        hit_mult     = armor_data["hit_mult"]
+        bonus_hp     = armor_data["bonus_hp"]     * multiplier
+        bonus_hit    = armor_data["bonus_hit"]    * multiplier
         bonus_wisdom = armor_data["bonus_wisdom"] * multiplier
-        
+
+        # Class bonus
         if armor_data["class_type"] == user_class_type:
-            if user_class_type == "Warrior":
+            if user_class_type == "The Executor":
                 bonus_hp *= 2
-            elif user_class_type == "Mage":
+            elif user_class_type == "The Indexer":
                 bonus_wisdom *= 2
-            elif user_class_type == "Rogue":
+            elif user_class_type == "The Trigger":
                 bonus_hit = bonus_hit * 2 + (20 * multiplier)
-        
+
         if not remove:
-            c.execute("""
-                UPDATE player_stats
-                SET base_hit = base_hit * ?
-                WHERE player_id = ?
-            """, (hit_mult, player_id))
+            c.execute("UPDATE player_stats SET base_hit = base_hit * ? WHERE player_id = ?", (hit_mult, player_id))
         else:
-            c.execute("""
-                UPDATE player_stats
-                SET base_hit = base_hit / ?
-                WHERE player_id = ?
-            """, (hit_mult, player_id))
-        
+            c.execute("UPDATE player_stats SET base_hit = base_hit / ? WHERE player_id = ?", (hit_mult, player_id))
+
         c.execute("""
             UPDATE player_stats
-            SET
-                bonus_hp = bonus_hp + ?,
+            SET bonus_hp = bonus_hp + ?,
                 bonus_hit = bonus_hit + ?,
                 bonus_wisdom = bonus_wisdom + ?
             WHERE player_id = ?
         """, (bonus_hp, bonus_hit, bonus_wisdom, player_id))
-        
-        c.execute("""
-            UPDATE player_stats
-            SET max_hp = base_hp + bonus_hp
-            WHERE player_id = ?
-        """, (player_id,))
-        
+
+        c.execute("UPDATE player_stats SET max_hp = base_hp + bonus_hp WHERE player_id = ?", (player_id,))
+
     elif bonus_type is BonusType.POTION:
         pass
     elif bonus_type is BonusType.ENV:
         pass
-    
+
     conn.commit()
 
+
 def generate_enemy(player_id: int):
-    c.execute("""
-        SELECT level
-        FROM players
-        WHERE id = ?
-    """, (player_id,))
+    """INSERT a new enemy row scaled to the player's current level."""
+    c.execute("SELECT level FROM players WHERE id = ?", (player_id,))
     player_level = c.fetchone()[0]
-    
+
     enemy_types = ["Goblin", "Skeleton", "Orc", "Troll", "Bandit"]
-    enemy_type = random.choice(enemy_types)
-    
-    base_hp = 50 + (player_level * 10) + random.randint(-10, 10)
-    base_hit = 5 + (player_level * 2) + random.randint(-2, 2)
-    experience_drop = 20 + (player_level * 5) + random.randint(-5, 5)
-    
+    enemy_type  = random.choice(enemy_types)
+
+    base_hp          = 50 + (player_level * 10) + random.randint(-10, 10)
+    base_hit         = 5  + (player_level * 2)  + random.randint(-2, 2)
+    experience_drop  = 20 + (player_level * 5)  + random.randint(-5, 5)
+
     c.execute("""
         INSERT INTO enemies (type, base_hp, base_hit, experience_drop)
         VALUES (?, ?, ?, ?)
     """, (enemy_type, base_hp, base_hit, experience_drop))
-    
+
     conn.commit()
     return c.lastrowid
 
+
 def enemy_attack(player_id: int, enemy_id: int):
+    """Run one round of combat — both sides deal damage simultaneously."""
     damage_to_enemy, damage_to_player = calculate_damage(player_id, enemy_id)
-    
+
     c.execute("""
         UPDATE player_stats
         SET current_hp = current_hp - ?
         WHERE player_id = ?
     """, (damage_to_player, player_id))
-    
+
     c.execute("""
         UPDATE enemies
         SET base_hp = base_hp - ?
@@ -606,21 +565,15 @@ def enemy_attack(player_id: int, enemy_id: int):
 
     conn.commit()
 
+
 def check_combat_outcome(player_id: int, enemy_id: int):
-    c.execute("""
-        SELECT current_hp
-        FROM player_stats
-        WHERE player_id = ?
-    """, (player_id,))
+    """SELECT both HP values and return the current combat state."""
+    c.execute("SELECT current_hp FROM player_stats WHERE player_id = ?", (player_id,))
     player_hp = c.fetchone()[0]
-    
-    c.execute("""
-        SELECT base_hp
-        FROM enemies
-        WHERE id = ?
-    """, (enemy_id,))
+
+    c.execute("SELECT base_hp FROM enemies WHERE id = ?", (enemy_id,))
     enemy_hp = c.fetchone()[0]
-    
+
     if player_hp <= 0 and enemy_hp <= 0:
         return "draw"
     elif player_hp <= 0:
@@ -630,24 +583,17 @@ def check_combat_outcome(player_id: int, enemy_id: int):
     else:
         return "ongoing"
 
-def calculate_damage(player_id: int, enemy_id: int):
-    c.execute("""
-        SELECT base_hit, bonus_hit
-        FROM player_stats
-        WHERE player_id = ?
-    """, (player_id,))
-    player_stats = c.fetchone()
-    player_hit = player_stats["base_hit"] + player_stats["bonus_hit"]
-    
-    c.execute("""
-        SELECT base_hit
-        FROM enemies
-        WHERE id = ?
-    """, (enemy_id,))
-    enemy_hit = c.fetchone()[0]
-    
-    damage_to_enemy = max(0, player_hit - random.randint(0, 5))
-    damage_to_player = max(0, enemy_hit - random.randint(0, 5))
-    
-    return damage_to_enemy, damage_to_player
 
+def calculate_damage(player_id: int, enemy_id: int):
+    """Calculate damage both sides deal in one round."""
+    c.execute("SELECT base_hit, bonus_hit FROM player_stats WHERE player_id = ?", (player_id,))
+    player_stats = c.fetchone()
+    player_hit   = player_stats["base_hit"] + player_stats["bonus_hit"]
+
+    c.execute("SELECT base_hit FROM enemies WHERE id = ?", (enemy_id,))
+    enemy_hit = c.fetchone()[0]
+
+    damage_to_enemy  = max(0, player_hit - random.randint(0, 5))
+    damage_to_player = max(0, enemy_hit  - random.randint(0, 5))
+
+    return damage_to_enemy, damage_to_player

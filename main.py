@@ -1,7 +1,6 @@
 import time
 import database
 
-
 # --- Game state flags ---
 run = True
 menu = True
@@ -19,23 +18,25 @@ def clear_screen():
 
 
 def typewrite(text, delay=0.03):
+    """Print text one character at a time for a typewriter effect."""
     for char in text:
         print(char, end="", flush=True)
         time.sleep(delay)
-    print()  # newline at the end
+    print()
+
 
 def new_game():
-    """Prompt for a username and class, then create a new player in the database."""
+    """Prompt for a username and class, then INSERT a new player into the database."""
     clear_screen()
     username = input("username: ")
-    choose_class = input("(1) Warrior (2) Mage (3) Rogue\n> ")
+    choose_class = input("(1) The Executor  (2) The Indexer  (3) The Trigger\n> ")
 
     if choose_class == "1":
-        class_name = "Warrior"
+        class_name = "The Executor"
     elif choose_class == "2":
-        class_name = "Mage"
+        class_name = "The Indexer"
     elif choose_class == "3":
-        class_name = "Rogue"
+        class_name = "The Trigger"
     else:
         print("invalid class")
         return None
@@ -44,7 +45,7 @@ def new_game():
 
 
 def load_game():
-    """List existing saves and let the player pick one by ID."""
+    """SELECT existing saves and let the player pick one by ID."""
     clear_screen()
     database.c.execute("SELECT id, username FROM players")
     usernames = database.c.fetchall()
@@ -63,18 +64,9 @@ def load_game():
 
     return row["id"]
 
-def adventure():
-    # calculate the 3 possible encounter types based on player level and class
-    
-    database.c.execute("SELECT level, class_type FROM players WHERE id = ?", (player_id,))
-    row = database.c.fetchone()
-    player_level = row["level"]
-    player_class = row["class_type"]
-
-
 
 def get_equipped(player_id):
-    """Return (equipped_weapon_name, equipped_armor_name) for the given player."""
+    """SELECT and return (equipped_weapon_name, equipped_armor_name) for the player."""
     database.c.execute("SELECT equipped_weapon FROM players WHERE id = ?", (player_id,))
     row = database.c.fetchone()
     equipped_weapon = row["equipped_weapon"] if row else None
@@ -98,22 +90,30 @@ def print_item_stats(data, label):
     print("====================")
 
 
-# --- One-time setup ---
 
+# --- One-time setup ---
+clear_screen()
+print(r"  _________      .__  .__  __                                 .__        ")
+print(r" /   _____/ _____|  | |__|/  |_  ____     _____ _____    ____ |__|____   ")
+print(r" \_____  \ / ____/  | |  \   __\/ __ \   /     \\__  \  /    \|  \__  \  ")
+print(r" /        < <_|  |  |_|  ||  | \  ___/  |  Y Y  \/ __ \|   |  \  |/ __ \_")
+print(r"/_______  /\__   |____/__||__|  \___  > |__|_|  (____  /___|  /__(____  /")
+print(r"        \/    |__|                  \/        \/     \/     \/        \/ ")
+print("by Novodude")
+time.sleep(1.5)
 typewrite("initializing database...", delay=0.01)
 database.init_db()
-typewrite("initializing classes...", delay=0.01)
+typewrite("loading class schemas...", delay=0.01)
 database.init_classes()
-typewrite("initializing loot tables...", delay=0.01)
-typewrite("gived starter items...", delay=0.01)
+typewrite("generating loot tables...", delay=0.01)
 database.loot_init()
-typewrite("initializing map...", delay=0.01)
+typewrite("building world index...", delay=0.01)
 database.init_map()
-print("ready!")
+typewrite("ready.", delay=0.05)
 
 try:
     # ------------------------------------------------------------------ #
-    #  MAIN LOOP                                                         #
+    #  MAIN LOOP                                                           #
     # ------------------------------------------------------------------ #
     while run:
 
@@ -142,7 +142,7 @@ try:
 
         # ---- PLAY ---- #
         while play:
-            clear_screen()  # clear before showing the play menu each iteration
+            clear_screen()
             print("(0) adventure")
             print("(1) inventory")
             print("(2) equipped items")
@@ -159,16 +159,15 @@ try:
                 inventory = True
 
                 while inventory:
-                    clear_screen()  # refresh inventory list on every loop iteration
+                    clear_screen()
 
-                    # Fetch all items for this player
+                    # SELECT all items for this player
                     database.c.execute(
                         "SELECT rowid, item, amount FROM inventory WHERE player_id = ?",
                         (player_id,)
                     )
                     items = database.c.fetchall()
 
-                    # Get currently equipped items
                     equipped_weapon, equipped_armor = get_equipped(player_id)
 
                     if not items:
@@ -184,11 +183,9 @@ try:
                     try:
                         choice = int(input("> "))
                     except ValueError:
-                        # Non-numeric input — just re-show the inventory
                         continue
 
                     if choice == 0:
-                        # Exit inventory back to play menu
                         inventory = False
                         continue
 
@@ -197,7 +194,6 @@ try:
                     inventory = False
 
                     while selecting_item:
-                        # Re-fetch equipped state in case it changed mid-session
                         equipped_weapon, equipped_armor = get_equipped(player_id)
 
                         selected_item = next((i for i in items if i["rowid"] == choice), None)
@@ -211,7 +207,7 @@ try:
 
                         item_name = selected_item["item"]
 
-                        # Look up item type in weapons and armors tables
+                        # SELECT item data from weapons or armors
                         database.c.execute("SELECT * FROM weapons WHERE name = ?", (item_name,))
                         weapon_data = database.c.fetchone()
                         database.c.execute("SELECT * FROM armors WHERE name = ?", (item_name,))
@@ -219,11 +215,10 @@ try:
 
                         clear_screen()
 
-                        # Display stats depending on item type
                         if weapon_data:
-                            print_item_stats(weapon_data, f"WEAPON — {item_name}")
+                            print_item_stats(weapon_data, f"WEAPON - {item_name}")
                         elif armor_data:
-                            print_item_stats(armor_data, f"ARMOR  — {item_name}")
+                            print_item_stats(armor_data, f"ARMOR  - {item_name}")
                         else:
                             print(f"(no stat data found for '{item_name}')")
 
@@ -236,7 +231,7 @@ try:
                         action = input("> ")
 
                         if action == "1":
-                            # Equip or unequip the selected item
+                            # UPDATE players SET equipped_* and recalculate bonuses
                             if weapon_data:
                                 if is_equipped:
                                     database.bonus_calc(database.BonusType.WEAPON, player_id=player_id, remove=True)
@@ -256,17 +251,16 @@ try:
                                 database.conn.commit()
 
                             selecting_item = False
-                            inventory = True  # return to inventory list
+                            inventory = True
 
                         elif action == "2":
-                            # Throw / permanently discard the item
+                            # DELETE the item row from inventory
                             database.c.execute("DELETE FROM inventory WHERE rowid = ?", (selected_item["rowid"],))
                             database.conn.commit()
                             selecting_item = False
-                            inventory = True  # return to inventory list
+                            inventory = True
 
                         elif action == "3":
-                            # Go back to inventory list without doing anything
                             selecting_item = False
                             inventory = True
 
@@ -304,16 +298,12 @@ try:
                 play = False
                 menu = True
 
+        # ---- ADVENTURE ---- #
         while adventuring:
             clear_screen()
-            typewrite("adventuring...")
-            print("\n" * 3)
-            
-
-
-            
-            
+            typewrite("querying the world index...")
+            print()
+            # TODO: SELECT encounter node from map, branch by encounter_type
 
 except KeyboardInterrupt:
-    # Ctrl+C pressed — exit cleanly without a traceback
-    print("\nGoodbye!")
+    print("\nconnection closed.")
