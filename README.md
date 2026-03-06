@@ -108,25 +108,25 @@ Requirements: Python 3.10+, no external dependencies.
 
 ### `STORED_PROCEDURE` / `DEADLOCK` — Caves & Dungeons
 
-- [ ] Multi-room crawl through encounter_types `2` and `3`
-- [ ] Room-by-room navigation with branching paths
-- [ ] Traps as `CONSTRAINT` violations — damage if you fail a check
-- [ ] Guaranteed loot `INSERT` on final room clear
-- [ ] `UPDATE map SET finished = 1` when a node is fully cleared
+- [x] Multi-room crawl through encounter_types `2` and `3`
+- [x] Room-by-room navigation with branching paths
+- [x] Traps as `CONSTRAINT` violations — damage if you fail a check
+- [x] Guaranteed loot `INSERT` on final room clear
+- [x] `UPDATE map SET finished = 1` when a node is fully cleared
 
 ### `OVERFLOW` — Bosses
 
 - [x] Boss nodes via encounter_type `5`
 - [x] Boss stats seeded far above normal enemy ranges
-- [ ] Unique named loot `INSERT` on kill — not in the regular pool
+- [x] Unique named loot `INSERT` on kill — not in the regular pool
 - [x] One boss per `level_range`, gated by player level check
 
 ### `CONSTRAINT` — Forest events
 
 - [x] Forest encounters via encounter_type `4`
-- [ ] Read `events` table flags at encounter start
-- [ ] Apply modifiers for each active event flag
-- [ ] Event expiry — flags auto-reset after N completed encounters
+- [x] Read `events` table flags at encounter start
+- [x] Apply modifiers for each active event flag
+- [x] Event expiry — flags auto-reset after N completed encounters
 
 ### World / Map
 
@@ -136,6 +136,6 @@ Requirements: Python 3.10+, no external dependencies.
 ### Quality of Life
 
 - [x] Player stats screen — full `SELECT` from `player_stats` displayed cleanly
-- [ ] XP progress bar toward next level
-- [ ] Confirm prompt before `DELETE FROM inventory`
-- [ ] Paginate large inventory lists
+- [x] XP progress bar toward next level
+- [x] Confirm prompt before `DELETE FROM inventory`
+- [x] Paginate large inventory lists
