@@ -92,19 +92,19 @@ Requirements: Python 3.10+, no external dependencies.
 
 ### `QUERY` — Combat encounters
 
-- [ ] Wire up the combat loop
-- [ ] Player attack action in the fight menu
-- [ ] Flee mechanic — abort the query, take a penalty
-- [ ] Death handling — `UPDATE players SET deaths = deaths + 1`, respawn or game over
-- [ ] XP gain on kill — `UPDATE player_stats` then check level threshold
-- [ ] Combat log printed with typewriter effect
+- [x] Wire up the combat loop
+- [x] Player attack action in the fight menu
+- [x] Flee mechanic — abort the query, take a penalty
+- [x] Death handling — `UPDATE players SET deaths = deaths + 1`, respawn or game over
+- [x] XP gain on kill — `UPDATE player_stats` then check level threshold
+- [x] Combat log printed with typewriter effect
 
 ### `TRANSACTION` — Shops
 
-- [ ] Shop encounter using encounter_type `0` nodes from `map`
-- [ ] Buy items — `SELECT` stock, `UPDATE gold`, `INSERT` into `inventory`
-- [ ] Sell items — `DELETE` from `inventory`, `UPDATE gold`
-- [ ] Stock pool scales with node `level_range`
+- [x] Shop encounter using encounter_type `0` nodes from `map`
+- [x] Buy items — `SELECT` stock, `UPDATE gold`, `INSERT` into `inventory`
+- [x] Sell items — `DELETE` from `inventory`, `UPDATE gold`
+- [x] Stock pool scales with node `level_range`
 
 ### `STORED_PROCEDURE` / `DEADLOCK` — Caves & Dungeons
 
@@ -116,27 +116,26 @@ Requirements: Python 3.10+, no external dependencies.
 
 ### `OVERFLOW` — Bosses
 
-- [ ] Boss nodes via encounter_type `5`
-- [ ] Boss stats seeded far above normal enemy ranges
+- [x] Boss nodes via encounter_type `5`
+- [x] Boss stats seeded far above normal enemy ranges
 - [ ] Unique named loot `INSERT` on kill — not in the regular pool
-- [ ] One boss per `level_range`, gated by player level check
+- [x] One boss per `level_range`, gated by player level check
 
 ### `CONSTRAINT` — Forest events
 
-- [ ] Forest encounters via encounter_type `4`
+- [x] Forest encounters via encounter_type `4`
 - [ ] Read `events` table flags at encounter start
 - [ ] Apply modifiers for each active event flag
 - [ ] Event expiry — flags auto-reset after N completed encounters
 
 ### World / Map
 
-- [ ] Travel menu — `SELECT` from `map WHERE level_range = ?` filtered by player level
-- [ ] Show node name, type, and whether `finished`
-- [ ] Prevent revisiting `finished = 1` nodes (or allow with reduced rewards)
+- [x] Show node name, type, and whether `finished`
+- [x] Prevent revisiting `finished = 1` nodes (or allow with reduced rewards)
 
 ### Quality of Life
 
-- [ ] Player stats screen — full `SELECT` from `player_stats` displayed cleanly
+- [x] Player stats screen — full `SELECT` from `player_stats` displayed cleanly
 - [ ] XP progress bar toward next level
 - [ ] Confirm prompt before `DELETE FROM inventory`
 - [ ] Paginate large inventory lists

@@ -910,15 +910,15 @@ def generate_enemy(player_id: int, is_boss: bool = False):
     enemy_type  = random.choice(enemy_types)
 
     # --- Scaling goals ---
-    # Enemy should take 5-9 player hits to kill (accounting for ±15% dmg variance + crits)
-    # Enemy should deal enough damage to kill the player in 6-12 hits
+    # Enemy should take 5-8 player hits to kill (accounting for ±15% dmg variance + crits)
+    # Enemy should deal enough damage to kill the player in 24 hits
     #
     # player_hit  = base_hit * hit_mult + bonus_hit  (full gear stack)
     # player_hp   = base_hp + bonus_hp               (full gear stack)
     # Both are already read from player_stats so they reflect all equipped bonuses.
 
-    target_rounds_to_die  = random.randint(5, 9)    # how many player hits to kill enemy
-    target_rounds_to_kill = random.randint(6, 12)   # how many enemy hits to kill player
+    target_rounds_to_die  = random.randint(5, 8)    # how many player hits to kill enemy
+    target_rounds_to_kill = random.randint(6, 24)   # how many enemy hits to kill player
 
     hp_variance  = random.uniform(0.88, 1.12)
     hit_variance = random.uniform(0.88, 1.12)
@@ -926,11 +926,11 @@ def generate_enemy(player_id: int, is_boss: bool = False):
     # Average player damage per hit (mid-variance, no crit)
     avg_player_dmg = player_hit * 1.0
 
-    # Enemy HP = average player damage * desired rounds
-    base_hp  = max(40, int(avg_player_dmg * target_rounds_to_die * hp_variance))
+    # Enemy HP = average player damage * desired rounds multiplied by 0.5 to make it easier for players
+    base_hp  = max(40, int((avg_player_dmg * target_rounds_to_die * hp_variance) * 0.5))
 
-    # Enemy hit = player HP / desired rounds to kill player
-    base_hit = max(8,  int((player_hp / target_rounds_to_kill) * hit_variance))
+    # Enemy hit = player HP / desired rounds to kill player multiplied by 0.5 to make it easier for players
+    base_hit = max(8,  int(((player_hp / target_rounds_to_kill) * hit_variance) * 0.5))
     experience_drop = 20 + (player_level * 5) + random.randint(-5, 5)
 
     # Boss multiplier — significantly tankier and harder hitting
@@ -1005,6 +1005,53 @@ def reconnect():
     """Reconnect to the database. Useful for long-running sessions."""
     global conn, c
     conn.close()
-    conn = sql.connect("game.db")
+    conn = sql.connect("game_data.db")
     conn.row_factory = sql.Row
     c = conn.cursor()
+
+def experience_needed_for_next_level(current_level: int):
+    """Calculate the experience needed to reach the next level.
+    Uses a simple formula: 100 XP for level 2, then +50 XP per additional level."""
+    if current_level < 1:
+        return 100
+    return 100 + (current_level - 1) * 50
+
+def level_up(player_id: int):
+    """Increase player level by 1 and apply stat increases."""
+    c.execute("SELECT level, experience FROM players WHERE id = ?", (player_id,))
+    row = c.fetchone()
+    current_level = row[0]
+    current_experience = row[1]
+    new_level = current_level + 1
+
+    # Level up bonuses — simple flat increases per level
+    hp_increase = 20
+    hit_increase = 5
+    wisdom_increase = 3
+
+    if current_experience < experience_needed_for_next_level(current_level):
+        raise ValueError("Not enough experience to level up")
+    
+    c.execute("""
+        UPDATE players SET experience = experience - ? WHERE id = ?
+    """, (experience_needed_for_next_level(current_level), player_id))
+
+    c.execute("""
+        UPDATE players SET level = ? WHERE id = ?
+    """, (new_level, player_id))
+
+    c.execute("""
+        UPDATE player_stats
+        SET base_hp = base_hp + ?,
+            max_hp = max_hp + ?,
+            current_hp = max_hp + ?,  -- heal on level up
+            base_hit = base_hit + ?,
+            base_wisdom = base_wisdom + ?
+        WHERE player_id = ?
+    """, (hp_increase, hp_increase, hp_increase, hit_increase, wisdom_increase, player_id))
+
+    conn.commit()
+
+    print(f"\nlevel up! ({current_level} -> {new_level})")
+
+

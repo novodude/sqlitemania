@@ -1,6 +1,7 @@
 import os
 import time
-import database
+import random
+import database as db
 import ascii_art
 
 # --- Game state flags ---
@@ -40,19 +41,19 @@ def draw_logo():
 
 def initialize_game():
     draw_logo()
-    typewrite("initializing database...", delay=0.01)
-    database.init_db()
+    typewrite("initializing db...", delay=0.01)
+    db.init_db()
     typewrite("loading class schemas...", delay=0.01)
-    database.init_classes()
+    db.init_classes()
     typewrite("generating loot tables...", delay=0.01)
-    database.loot_init()
+    db.loot_init()
     typewrite("building world index...", delay=0.01)
-    database.init_map()
+    db.init_map()
     typewrite("ready.", delay=0.05)
 
 
 def new_game():
-    """Prompt for a username and class, then INSERT a new player into the database."""
+    """Prompt for a username and class, then INSERT a new player into the db."""
     clear_screen()
     username = input("username: ")
     choose_class = input("(1) The Executor  (2) The Indexer  (3) The Trigger\n> ")
@@ -68,7 +69,7 @@ def new_game():
         return None
 
     try:
-        return database.init_player(username, class_name)
+        return db.init_player(username, class_name)
     except Exception as e:
         if "UNIQUE constraint failed" in str(e):
             print(f"  username '{username}' is already taken.")
@@ -81,16 +82,16 @@ def new_game():
 def load_game():
     """SELECT existing saves and let the player pick one by ID."""
     clear_screen()
-    database.c.execute("SELECT id, username FROM players")
-    usernames = database.c.fetchall()
+    db.c.execute("SELECT id, username FROM players")
+    usernames = db.c.fetchall()
 
     print("players:")
     for username in usernames:
         print(f"({username['id']}) {username['username']}")
 
     user_id = input("choose number: ")
-    database.c.execute("SELECT id FROM players WHERE id = ?", (user_id,))
-    row = database.c.fetchone()
+    db.c.execute("SELECT id FROM players WHERE id = ?", (user_id,))
+    row = db.c.fetchone()
 
     if not row:
         print("save not found")
@@ -101,12 +102,12 @@ def load_game():
 
 def get_equipped(player_id):
     """SELECT and return (equipped_weapon_name, equipped_armor_name) for the player."""
-    database.c.execute("SELECT equipped_weapon FROM players WHERE id = ?", (player_id,))
-    row = database.c.fetchone()
+    db.c.execute("SELECT equipped_weapon FROM players WHERE id = ?", (player_id,))
+    row = db.c.fetchone()
     equipped_weapon = row["equipped_weapon"] if row else None
 
-    database.c.execute("SELECT equipped_armor FROM players WHERE id = ?", (player_id,))
-    row = database.c.fetchone()
+    db.c.execute("SELECT equipped_armor FROM players WHERE id = ?", (player_id,))
+    row = db.c.fetchone()
     equipped_armor = row["equipped_armor"] if row else None
 
     return equipped_weapon, equipped_armor
@@ -123,30 +124,59 @@ def print_item_stats(data, label):
     print("| Bonus Wisdom:   ", data["bonus_wisdom"])
     print("====================")
 
+def show_stats(player_id):
+    """Fetch and print the player's current stats."""
+    db.c.execute("SELECT username FROM players WHERE id = ?", (player_id,))
+    username = db.c.fetchone()["username"]
+    db.c.execute("""
+        SELECT
+            base_hp, bonus_hp, max_hp, 
+            current_hp, gold, base_hit,
+            bonus_hit, base_wisdom, bonus_wisdom
+        FROM player_stats
+        WHERE player_id = ?""",
+        (player_id,)
+    )
+    stats = db.c.fetchone()
+    db.c.execute("SELECT level, experience, deaths FROM players WHERE id = ?", (player_id,))
+    player_info = db.c.fetchone()
+    
+    experience_to_next_level = 100 + (player_info['level'] - 1) * 50
+
+    header = f"=== [ {username} ] ==="
+
+    print(header)
+    print(f"Level: {player_info['level']}  |  XP: {player_info['experience']} | next level in {experience_to_next_level - player_info['experience']} xp")
+    print(f"HP: {stats['current_hp']}/{stats['max_hp']}  (Base: {stats['base_hp']} + Bonus: {stats['bonus_hp']})")
+    print(f"Hit:  {stats['base_hit'] + stats['bonus_hit']}( Base: {stats['base_hit']} + Bonus: {stats['bonus_hit']})")
+    print(f"Wisdom: {stats['base_wisdom'] + stats['bonus_wisdom']} (Base: {stats['base_wisdom']} + Bonus: {stats['bonus_wisdom']})")
+    print(f"Deaths: {player_info['deaths']}")
+    print(f"Gold: {stats['gold']}")
+    print("=" * len(header))
 
 # ------------------------------------------------------------------ #
-#  COMBAT                                                              #
+#  COMBAT                                                            #
 # ------------------------------------------------------------------ #
 
 def get_combat_potions(player_id):
     """Return inventory rows that are potions."""
-    potion_names = {p[0] for p in database.get_potion_pool()}
-    database.c.execute(
+    potion_names = {p[0] for p in db.get_potion_pool()}
+    db.c.execute(
         "SELECT rowid, item, amount FROM inventory WHERE player_id = ?", (player_id,)
     )
-    return [i for i in database.c.fetchall() if i["item"] in potion_names]
+    return [i for i in db.c.fetchall() if i["item"] in potion_names]
 
 
 def draw_combat_screen(player_id, enemy_id, events, active_defense, log):
     """Render the full combat screen and return fetched stats and potions."""
-    database.c.execute(
+    db.c.execute(
         "SELECT current_hp, max_hp FROM player_stats WHERE player_id = ?", (player_id,)
     )
-    pstats = database.c.fetchone()
-    database.c.execute(
+    pstats = db.c.fetchone()
+    db.c.execute(
         "SELECT type, base_hp FROM enemies WHERE id = ?", (enemy_id,)
     )
-    estats = database.c.fetchone()
+    estats = db.c.fetchone()
 
     clear_screen()
     ascii_art.print_enemy_art(estats["type"])
@@ -184,15 +214,15 @@ def draw_combat_screen(player_id, enemy_id, events, active_defense, log):
 def player_attack(player_id, enemy_id):
     """Player deals damage to enemy. Returns damage dealt."""
     import random
-    database.c.execute(
+    db.c.execute(
         "SELECT base_hit, bonus_hit FROM player_stats WHERE player_id = ?", (player_id,)
     )
-    pstats = database.c.fetchone()
+    pstats = db.c.fetchone()
     dmg = max(1, pstats["base_hit"] + pstats["bonus_hit"] - random.randint(0, 5))
-    database.c.execute(
+    db.c.execute(
         "UPDATE enemies SET base_hp = base_hp - ? WHERE id = ?", (dmg, enemy_id)
     )
-    database.conn.commit()
+    db.conn.commit()
     return dmg
 
 
@@ -201,8 +231,8 @@ def enemy_turn(player_id, enemy_id, events, active_defense):
     import random
     log = []
 
-    database.c.execute("SELECT base_hit FROM enemies WHERE id = ?", (enemy_id,))
-    ehit = database.c.fetchone()[0]
+    db.c.execute("SELECT base_hit FROM enemies WHERE id = ?", (enemy_id,))
+    ehit = db.c.fetchone()[0]
 
     dmg = max(0, ehit - random.randint(0, 5))
 
@@ -215,7 +245,7 @@ def enemy_turn(player_id, enemy_id, events, active_defense):
             log.append(f"barrier absorbs {absorbed} damage.")
 
     if dmg > 0:
-        database.c.execute(
+        db.c.execute(
             "UPDATE player_stats SET current_hp = current_hp - ? WHERE player_id = ?",
             (dmg, player_id)
         )
@@ -225,7 +255,7 @@ def enemy_turn(player_id, enemy_id, events, active_defense):
 
     if events["blood_moon"]:
         extra = max(0, int(ehit * 0.6) + random.randint(0, 4))
-        database.c.execute(
+        db.c.execute(
             "UPDATE player_stats SET current_hp = current_hp - ? WHERE player_id = ?",
             (extra, player_id)
         )
@@ -233,13 +263,13 @@ def enemy_turn(player_id, enemy_id, events, active_defense):
 
     if events["monster_rush"]:
         extra = max(0, int(ehit * 0.5) + random.randint(0, 3))
-        database.c.execute(
+        db.c.execute(
             "UPDATE player_stats SET current_hp = current_hp - ? WHERE player_id = ?",
             (extra, player_id)
         )
         log.append(f"monster rush second strike: -{extra} hp.")
 
-    database.conn.commit()
+    db.conn.commit()
     return active_defense, log
 
 
@@ -252,7 +282,6 @@ def run_combat(player_id, enemy_id, events, active_defense=0):
       3. Potion: applied instantly, enemy does NOT counter-attack.
       4. Flee: enemy gets one free hit, then combat ends.
     """
-    import random
     log = []
 
     while True:
@@ -272,30 +301,34 @@ def run_combat(player_id, enemy_id, events, active_defense=0):
             log = [f"you hit for {dmg} damage."]
 
             # Check enemy death
-            database.c.execute("SELECT base_hp FROM enemies WHERE id = ?", (enemy_id,))
-            if database.c.fetchone()[0] <= 0:
-                database.c.execute(
+            db.c.execute("SELECT base_hp FROM enemies WHERE id = ?", (enemy_id,))
+            if db.c.fetchone()[0] <= 0:
+                db.c.execute(
                     "SELECT experience_drop FROM enemies WHERE id = ?", (enemy_id,)
                 )
-                xp = database.c.fetchone()[0]
+                xp = db.c.fetchone()[0]
                 gold_drop = random.randint(8, 30)
-                database.c.execute(
+                db.c.execute(
                     "UPDATE players SET experience = experience + ?, kills = kills + 1 WHERE id = ?",
                     (xp, player_id)
                 )
-                database.c.execute(
+                db.c.execute(
                     "UPDATE player_stats SET gold = gold + ? WHERE player_id = ?",
                     (gold_drop, player_id)
                 )
-                database.conn.commit()
+                db.conn.commit()
 
-                drop = database.enemy_drop_potion(player_id)
+                drop = db.enemy_drop_potion(player_id)
 
                 clear_screen()
                 ascii_art.print_enemy_art(estats["type"])
                 print()
                 typewrite(f"  enemy defeated!", delay=0.02)
                 typewrite(f"  +{xp} xp   +{gold_drop} gold", delay=0.02)
+                db.c.execute("SELECT level, experience FROM players WHERE id = ?", (player_id,))
+                row = db.c.fetchone()
+                if row[1] >= db.experience_needed_for_next_level(row[0]):
+                    db.level_up(player_id)
                 if drop:
                     typewrite(f"  loot: {drop}", delay=0.02)
                 input("\npress enter...")
@@ -308,17 +341,17 @@ def run_combat(player_id, enemy_id, events, active_defense=0):
             log += enemy_log
 
             # Check player death
-            database.c.execute(
+            db.c.execute(
                 "SELECT current_hp FROM player_stats WHERE player_id = ?", (player_id,)
             )
-            if database.c.fetchone()[0] <= 0:
-                database.c.execute(
+            if db.c.fetchone()[0] <= 0:
+                db.c.execute(
                     "UPDATE players SET deaths = deaths + 1 WHERE id = ?", (player_id,)
                 )
-                database.c.execute(
-                    "UPDATE player_stats SET current_hp = 1 WHERE player_id = ?", (player_id,)
+                db.c.execute(
+                    "UPDATE player_stats SET current_hp = max_hp/2 WHERE player_id = ?", (player_id,)
                 )
-                database.conn.commit()
+                db.conn.commit()
                 clear_screen()
                 typewrite("  you have been defeated.", delay=0.03)
                 input("\npress enter...")
@@ -327,18 +360,18 @@ def run_combat(player_id, enemy_id, events, active_defense=0):
         # ---- USE POTION (free action, no enemy counter) ---- #
         elif 2 <= action <= len(potions) + 1:
             pot_row = potions[action - 2]
-            result  = database.apply_potion(player_id, pot_row["item"])
+            result  = db.apply_potion(player_id, pot_row["item"])
 
             if pot_row["amount"] <= 1:
-                database.c.execute(
+                db.c.execute(
                     "DELETE FROM inventory WHERE rowid = ?", (pot_row["rowid"],)
                 )
             else:
-                database.c.execute(
+                db.c.execute(
                     "UPDATE inventory SET amount = amount - 1 WHERE rowid = ?",
                     (pot_row["rowid"],)
                 )
-            database.conn.commit()
+            db.conn.commit()
 
             log = []
             if result.get("heal"):
@@ -353,14 +386,14 @@ def run_combat(player_id, enemy_id, events, active_defense=0):
 
         # ---- FLEE ---- #
         elif action == flee_option:
-            database.c.execute("SELECT base_hit FROM enemies WHERE id = ?", (enemy_id,))
-            ehit = database.c.fetchone()[0]
+            db.c.execute("SELECT base_hit FROM enemies WHERE id = ?", (enemy_id,))
+            ehit = db.c.fetchone()[0]
             flee_dmg = max(0, ehit // 2 - random.randint(0, 3))
-            database.c.execute(
+            db.c.execute(
                 "UPDATE player_stats SET current_hp = current_hp - ? WHERE player_id = ?",
                 (flee_dmg, player_id)
             )
-            database.conn.commit()
+            db.conn.commit()
             clear_screen()
             typewrite(f"  you flee — taking {flee_dmg} damage on the way out.", delay=0.02)
             input("\npress enter...")
@@ -382,17 +415,17 @@ def run_shop(player_id, node_name, events):
     fateful_day = events["fateful_day"]
 
     # --- Build gear stock ---
-    database.c.execute(
+    db.c.execute(
         "SELECT * FROM weapons WHERE found = 0 ORDER BY RANDOM() LIMIT ?",
         (SHOP_STOCK_SIZE * 3,)
     )
-    weapon_pool = list(database.c.fetchall())
+    weapon_pool = list(db.c.fetchall())
 
-    database.c.execute(
+    db.c.execute(
         "SELECT * FROM armors WHERE found = 0 ORDER BY RANDOM() LIMIT ?",
         (SHOP_STOCK_SIZE * 3,)
     )
-    armor_pool = list(database.c.fetchall())
+    armor_pool = list(db.c.fetchall())
 
     combined = weapon_pool + armor_pool
     if fateful_day:
@@ -404,7 +437,7 @@ def run_shop(player_id, node_name, events):
         gear_stock = random.sample(combined, min(SHOP_STOCK_SIZE, len(combined)))
 
     # --- Build potion stock ---
-    all_potions = database.get_potion_pool()
+    all_potions = db.get_potion_pool()
     if fateful_day:
         pw = [p[7] for p in all_potions]
     else:
@@ -447,15 +480,15 @@ def run_shop(player_id, node_name, events):
     while in_shop:
         clear_screen()
 
-        database.c.execute(
+        db.c.execute(
             "SELECT gold FROM player_stats WHERE player_id = ?", (player_id,)
         )
-        gold = database.c.fetchone()["gold"]
+        gold = db.c.fetchone()["gold"]
 
-        database.c.execute(
+        db.c.execute(
             "SELECT rowid, item, amount FROM inventory WHERE player_id = ?", (player_id,)
         )
-        inv_items = database.c.fetchall()
+        inv_items = db.c.fetchall()
 
         # --- Offsets ---
         gear_end    = len(gear_stock)                        # 1..gear_end
@@ -495,10 +528,10 @@ def run_shop(player_id, node_name, events):
         print("  [ SELL ]")
         if inv_items:
             for k, inv_row in enumerate(inv_items, potion_end + 1):
-                database.c.execute("SELECT * FROM weapons WHERE name = ?", (inv_row["item"],))
-                wdata = database.c.fetchone()
-                database.c.execute("SELECT * FROM armors WHERE name = ?", (inv_row["item"],))
-                adata = database.c.fetchone()
+                db.c.execute("SELECT * FROM weapons WHERE name = ?", (inv_row["item"],))
+                wdata = db.c.fetchone()
+                db.c.execute("SELECT * FROM armors WHERE name = ?", (inv_row["item"],))
+                adata = db.c.fetchone()
                 idata = wdata or adata
                 sv = gear_sell_price(idata) if idata else 5
                 print(f"  ({k}) {inv_row['item']}  x{inv_row['amount']}  —  sell for {sv}g")
@@ -538,20 +571,20 @@ def run_shop(player_id, node_name, events):
                     typewrite("  not enough gold.", delay=0.02)
                     input("\npress enter...")
                 else:
-                    database.c.execute(
+                    db.c.execute(
                         "UPDATE player_stats SET gold = gold - ? WHERE player_id = ?",
                         (price, player_id)
                     )
-                    database.add_item(player_id, item["name"], 1)
+                    db.add_item(player_id, item["name"], 1)
                     if item in weapon_pool:
-                        database.c.execute(
+                        db.c.execute(
                             "UPDATE weapons SET found = 1 WHERE id = ?", (item["id"],)
                         )
                     else:
-                        database.c.execute(
+                        db.c.execute(
                             "UPDATE armors SET found = 1 WHERE id = ?", (item["id"],)
                         )
-                    database.conn.commit()
+                    db.conn.commit()
                     gear_stock.remove(item)
                     typewrite(f"  bought {item['name']} for {price}g.", delay=0.02)
                     input("\npress enter...")
@@ -577,22 +610,22 @@ def run_shop(player_id, node_name, events):
                     typewrite("  not enough gold.", delay=0.02)
                     input("\npress enter...")
                 else:
-                    database.c.execute(
+                    db.c.execute(
                         "UPDATE player_stats SET gold = gold - ? WHERE player_id = ?",
                         (pprice, player_id)
                     )
-                    database.add_item(player_id, pot[0], 1)
-                    database.conn.commit()
+                    db.add_item(player_id, pot[0], 1)
+                    db.conn.commit()
                     typewrite(f"  bought {pot[0]} for {pprice}g.", delay=0.02)
                     input("\npress enter...")
 
         # --- Inspect & sell inventory item ---
         elif potion_end < choice <= sell_end:
             inv_row = inv_items[choice - potion_end - 1]
-            database.c.execute("SELECT * FROM weapons WHERE name = ?", (inv_row["item"],))
-            wdata = database.c.fetchone()
-            database.c.execute("SELECT * FROM armors WHERE name = ?", (inv_row["item"],))
-            adata = database.c.fetchone()
+            db.c.execute("SELECT * FROM weapons WHERE name = ?", (inv_row["item"],))
+            wdata = db.c.fetchone()
+            db.c.execute("SELECT * FROM armors WHERE name = ?", (inv_row["item"],))
+            adata = db.c.fetchone()
             idata = wdata or adata
 
             sv = gear_sell_price(idata) if idata else 5
@@ -613,20 +646,20 @@ def run_shop(player_id, node_name, events):
                 confirm = 2
 
             if confirm == 1:
-                database.c.execute(
+                db.c.execute(
                     "UPDATE player_stats SET gold = gold + ? WHERE player_id = ?",
                     (sv, player_id)
                 )
                 if inv_row["amount"] <= 1:
-                    database.c.execute(
+                    db.c.execute(
                         "DELETE FROM inventory WHERE rowid = ?", (inv_row["rowid"],)
                     )
                 else:
-                    database.c.execute(
+                    db.c.execute(
                         "UPDATE inventory SET amount = amount - 1 WHERE rowid = ?",
                         (inv_row["rowid"],)
                     )
-                database.conn.commit()
+                db.conn.commit()
                 typewrite(f"  sold {inv_row['item']} for {sv}g.", delay=0.02)
                 input("\npress enter...")
 
@@ -637,8 +670,8 @@ def run_shop(player_id, node_name, events):
 
 def load_events():
     """SELECT the events row. Returns a dict of event flags (all 0 if no row exists)."""
-    database.c.execute("SELECT * FROM events LIMIT 1")
-    row = database.c.fetchone()
+    db.c.execute("SELECT * FROM events LIMIT 1")
+    row = db.c.fetchone()
     if row:
         return dict(row)
     # Default — no active events
@@ -656,25 +689,25 @@ def apply_solar_eclipse(player_id, events, remove=False):
     if not events["solar_eclipse"]:
         return
 
-    database.c.execute("SELECT class_id FROM players WHERE id = ?", (player_id,))
-    class_id = database.c.fetchone()[0]
-    database.c.execute("SELECT name FROM class WHERE id = ?", (class_id,))
-    class_name = database.c.fetchone()[0]
+    db.c.execute("SELECT class_id FROM players WHERE id = ?", (player_id,))
+    class_id = db.c.fetchone()[0]
+    db.c.execute("SELECT name FROM class WHERE id = ?", (class_id,))
+    class_name = db.c.fetchone()[0]
 
     if class_name != "The Indexer":
         return
 
     if remove:
-        database.c.execute(
+        db.c.execute(
             "UPDATE player_stats SET bonus_wisdom = bonus_wisdom / 2 WHERE player_id = ?",
             (player_id,)
         )
     else:
-        database.c.execute(
+        db.c.execute(
             "UPDATE player_stats SET bonus_wisdom = bonus_wisdom * 2 WHERE player_id = ?",
             (player_id,)
         )
-    database.conn.commit()
+    db.conn.commit()
 
 
 def print_active_events(events):
@@ -729,7 +762,7 @@ try:
 
             elif choice == "3":
                 os.remove("game_data.db")
-                database.reconnect()
+                db.reconnect()
                 initialize_game()
 
             elif choice == "4":
@@ -741,9 +774,8 @@ try:
             clear_screen()
             print("(0) adventure")
             print("(1) inventory")
-            print("(2) equipped items")
-            print("(3) stats")
-            print("(4) back to menu")
+            print("(2) equipped items and stats")
+            print("(3) back to menu")
             choice = input("> ")
 
             # -- Adventure -- #
@@ -758,11 +790,11 @@ try:
                 while inventory:
                     clear_screen()
 
-                    database.c.execute(
+                    db.c.execute(
                         "SELECT rowid, item, amount FROM inventory WHERE player_id = ?",
                         (player_id,)
                     )
-                    items = database.c.fetchall()
+                    items = db.c.fetchall()
 
                     equipped_weapon, equipped_armor = get_equipped(player_id)
 
@@ -802,10 +834,10 @@ try:
 
                         item_name = selected_item["item"]
 
-                        database.c.execute("SELECT * FROM weapons WHERE name = ?", (item_name,))
-                        weapon_data = database.c.fetchone()
-                        database.c.execute("SELECT * FROM armors WHERE name = ?", (item_name,))
-                        armor_data = database.c.fetchone()
+                        db.c.execute("SELECT * FROM weapons WHERE name = ?", (item_name,))
+                        weapon_data = db.c.fetchone()
+                        db.c.execute("SELECT * FROM armors WHERE name = ?", (item_name,))
+                        armor_data = db.c.fetchone()
 
                         clear_screen()
 
@@ -827,28 +859,28 @@ try:
                         if action == "1":
                             if weapon_data:
                                 if is_equipped:
-                                    database.bonus_calc(database.BonusType.WEAPON, player_id=player_id, remove=True)
-                                    database.c.execute("UPDATE players SET equipped_weapon = NULL WHERE id = ?", (player_id,))
+                                    db.bonus_calc(db.BonusType.WEAPON, player_id=player_id, remove=True)
+                                    db.c.execute("UPDATE players SET equipped_weapon = NULL WHERE id = ?", (player_id,))
                                 else:
-                                    database.c.execute("UPDATE players SET equipped_weapon = ? WHERE id = ?", (item_name, player_id))
-                                    database.bonus_calc(database.BonusType.WEAPON, player_id=player_id)
-                                database.conn.commit()
+                                    db.c.execute("UPDATE players SET equipped_weapon = ? WHERE id = ?", (item_name, player_id))
+                                    db.bonus_calc(db.BonusType.WEAPON, player_id=player_id)
+                                db.conn.commit()
 
                             elif armor_data:
                                 if is_equipped:
-                                    database.bonus_calc(database.BonusType.ARMOR, player_id=player_id, remove=True)
-                                    database.c.execute("UPDATE players SET equipped_armor = NULL WHERE id = ?", (player_id,))
+                                    db.bonus_calc(db.BonusType.ARMOR, player_id=player_id, remove=True)
+                                    db.c.execute("UPDATE players SET equipped_armor = NULL WHERE id = ?", (player_id,))
                                 else:
-                                    database.c.execute("UPDATE players SET equipped_armor = ? WHERE id = ?", (item_name, player_id))
-                                    database.bonus_calc(database.BonusType.ARMOR, player_id=player_id)
-                                database.conn.commit()
+                                    db.c.execute("UPDATE players SET equipped_armor = ? WHERE id = ?", (item_name, player_id))
+                                    db.bonus_calc(db.BonusType.ARMOR, player_id=player_id)
+                                db.conn.commit()
 
                             selecting_item = False
                             inventory = True
 
                         elif action == "2":
-                            database.c.execute("DELETE FROM inventory WHERE rowid = ?", (selected_item["rowid"],))
-                            database.conn.commit()
+                            db.c.execute("DELETE FROM inventory WHERE rowid = ?", (selected_item["rowid"],))
+                            db.conn.commit()
                             selecting_item = False
                             inventory = True
 
@@ -856,16 +888,16 @@ try:
                             selecting_item = False
                             inventory = True
 
-            # -- Equipped items summary -- #
+            # -- Equipped items and stats summary -- #
             elif choice == "2":
                 clear_screen()
 
                 equipped_weapon, equipped_armor = get_equipped(player_id)
 
-                database.c.execute("SELECT * FROM weapons WHERE name = ?", (equipped_weapon,))
-                weapon_data = database.c.fetchone()
-                database.c.execute("SELECT * FROM armors WHERE name = ?", (equipped_armor,))
-                armor_data = database.c.fetchone()
+                db.c.execute("SELECT * FROM weapons WHERE name = ?", (equipped_weapon,))
+                weapon_data = db.c.fetchone()
+                db.c.execute("SELECT * FROM armors WHERE name = ?", (equipped_armor,))
+                armor_data = db.c.fetchone()
 
                 w_label = equipped_weapon if equipped_weapon else "nothing"
                 a_label = equipped_armor  if equipped_armor  else "nothing"
@@ -883,12 +915,13 @@ try:
                     print("No items equipped.")
 
                 print("==================================================")
+                input("\npress enter to show stats...")
+
+                clear_screen()
+                show_stats(player_id)
                 input("\npress enter to go back...")
 
             elif choice == "3":
-                show_stats(player_id)
-
-            elif choice == "4":
                 play = False
                 menu = True
 
@@ -907,9 +940,9 @@ try:
 
             if seed_input.isdigit():
                 custom_seed = int(seed_input)
-                run_id, current_node_id, seed = database.init_run(player_id, custom_seed)
+                run_id, current_node_id, seed = db.init_run(player_id, custom_seed)
             else:
-                run_id, current_node_id, seed = database.init_run(player_id)
+                run_id, current_node_id, seed = db.init_run(player_id)
 
             clear_screen()
             typewrite("querying the world index...", delay=0.01)
@@ -943,7 +976,7 @@ try:
             while path_running:
                 clear_screen()
 
-                node     = database.get_path_node(current_node_id)
+                node     = db.get_path_node(current_node_id)
                 enc_type = node["encounter_type"]
 
                 print(f"[ {node['name']} ] — {ENCOUNTER_NAME.get(enc_type, '???')}")
@@ -958,7 +991,7 @@ try:
 
                 elif enc_type == 0:
                     # TRANSACTION — shop
-                    database.register_shop_visit(player_id, node["id"])
+                    db.register_shop_visit(player_id, node["id"])
                     run_shop(player_id, node["name"], events)
 
                 elif enc_type in (1, 2, 3, 4):
@@ -970,7 +1003,7 @@ try:
                         input("\npress enter...")
                         # Skip this node — treat as cleared without a fight
                     else:
-                        enemy_id = database.generate_enemy(player_id)
+                        enemy_id = db.generate_enemy(player_id)
                         result, _ = run_combat(player_id, enemy_id, events)
 
                         if result == "lose":
@@ -985,7 +1018,7 @@ try:
                     clear_screen()
                     typewrite("  [ the air thickens. something massive stirs. ]", delay=0.03)
                     print()
-                    enemy_id = database.generate_enemy(player_id, is_boss=True)
+                    enemy_id = db.generate_enemy(player_id, is_boss=True)
 
                     result, _ = run_combat(player_id, enemy_id, events)
 
@@ -997,10 +1030,10 @@ try:
                         break
 
                 # Mark node finished
-                database.finish_node(node["id"])
+                db.finish_node(node["id"])
 
                 # ---- Get next choices ---- #
-                children = database.get_path_children(node["id"])
+                children = db.get_path_children(node["id"])
 
                 if not children:
                     # Leaf cleared — run complete
@@ -1022,7 +1055,7 @@ try:
                 print("choose your next path:")
                 print()
 
-                shops      = database.get_visited_shops(player_id)
+                shops      = db.get_visited_shops(player_id)
                 shop_offset = len(children)
 
                 for i, child in enumerate(children, 1):
@@ -1058,12 +1091,12 @@ try:
                 elif 1 <= choice <= len(children):
                     chosen = children[choice - 1]
                     current_node_id = chosen["id"]
-                    database.move_to_node(player_id, current_node_id)
+                    db.move_to_node(player_id, current_node_id)
 
                 elif shops and shop_offset < choice <= shop_offset + len(shops):
                     chosen_shop = shops[choice - shop_offset - 1]
                     current_node_id = chosen_shop["id"]
-                    database.move_to_node(player_id, current_node_id)
+                    db.move_to_node(player_id, current_node_id)
 
             if run_lost:
                 clear_screen()
