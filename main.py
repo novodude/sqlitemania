@@ -1,6 +1,7 @@
 import os
 import time
 import random
+from datetime import datetime
 import database as db
 import ascii_art
 
@@ -16,6 +17,9 @@ player_id = None
 # Inventory pagination
 INV_PAGE_SIZE = 8
 
+# Randomness seeding
+seed = datetime.now().timestamp()
+random.seed(seed)
 
 def clear_screen():
     print("\n" * 100)
@@ -51,6 +55,42 @@ def initialize_game():
     typewrite("building world index...", delay=0.01)
     db.init_map()
     typewrite("ready.", delay=0.05)
+    clear_screen()
+    show_intro()
+    print("\n" * 3)
+    typewrite("building world index...", delay=0.01)
+    db.init_map()
+    db.init_node_flavour()
+
+def show_intro():
+    if not db.is_first_launch():
+        return
+    clear_screen()
+    time.sleep(0.5)
+    typewrite("in the beginning, there was data.", delay=0.04)
+    time.sleep(0.4)
+    typewrite("vast. formless. unindexed.", delay=0.04)
+    time.sleep(0.4)
+    typewrite("then came the Schema.", delay=0.04)
+    time.sleep(0.6)
+    typewrite("it imposed order. named the tables. defined the keys.", delay=0.03)
+    time.sleep(0.4)
+    typewrite("for a time, the world was consistent.", delay=0.03)
+    time.sleep(0.6)
+    typewrite("then the corruption spread.", delay=0.04)
+    time.sleep(0.4)
+    typewrite("null pointers. deadlock wraiths. cascading failures.", delay=0.03)
+    time.sleep(0.4)
+    typewrite("the OVERFLOW bosses seized the deep layers.", delay=0.03)
+    time.sleep(0.6)
+    typewrite("you are a process. freshly spawned. assigned a class.", delay=0.03)
+    time.sleep(0.4)
+    typewrite("your task: traverse the index. clear the corruption.", delay=0.03)
+    time.sleep(0.4)
+    typewrite("restore the Schema.", delay=0.05)
+    time.sleep(0.8)
+    input("\n  press enter to begin...")
+    db.mark_intro_shown()
 
 
 def new_game():
@@ -116,7 +156,7 @@ def print_item_stats(data, label):
     print("| Hit Multiplier: ", data["hit_mult"])
     print("| Bonus HP:       ", data["bonus_hp"])
     print("| Bonus Hit:      ", data["bonus_hit"])
-    print("| Bonus Wisdom:   ", data["bonus_wisdom"])
+    print("| Bonus crit:   ", data["bonus_crit"])
     print("====================")
 
 
@@ -151,8 +191,8 @@ def show_stats(player_id):
     db.c.execute("SELECT username FROM players WHERE id = ?", (player_id,))
     username = db.c.fetchone()["username"]
     db.c.execute("""
-        SELECT base_hp, bonus_hp, max_hp, current_hp, gold,
-               base_hit, bonus_hit, base_wisdom, bonus_wisdom
+        SELECT base_hp, bonus_hp, max_hp, current_hp, bytes,
+               base_hit, bonus_hit, base_crit, bonus_crit
         FROM player_stats WHERE player_id = ?
     """, (player_id,))
     stats = db.c.fetchone()
@@ -164,9 +204,9 @@ def show_stats(player_id):
     print(f"Level: {player_info['level']}  |  {xp_bar(player_info['experience'], player_info['level'])}")
     print(f"HP:     {hp_bar(stats['current_hp'], stats['max_hp'])}  (base {stats['base_hp']} + bonus {stats['bonus_hp']})")
     print(f"Hit:    {stats['base_hit'] + stats['bonus_hit']}  (base {stats['base_hit']} + bonus {stats['bonus_hit']})")
-    print(f"Wisdom: {stats['base_wisdom'] + stats['bonus_wisdom']}  (base {stats['base_wisdom']} + bonus {stats['bonus_wisdom']})")
+    print(f"crit: {stats['base_crit'] + stats['bonus_crit']}  (base {stats['base_crit']} + bonus {stats['bonus_crit']})")
     print(f"Kills: {player_info['kills']}   Deaths: {player_info['deaths']}")
-    print(f"Gold:  {stats['gold']}")
+    print(f"bytes:  {stats['bytes']}")
     print("=" * len(header))
 
 
@@ -180,7 +220,7 @@ def get_combat_potions(player_id):
     return [i for i in db.c.fetchall() if i["item"] in potion_names]
 
 
-def draw_combat_screen(player_id, enemy_id, events, active_defense, log):
+def draw_combat_screen(player_id, enemy_id, events, active_defense, log, combo = 0):
     db.c.execute("SELECT current_hp, max_hp FROM player_stats WHERE player_id = ?", (player_id,))
     pstats = db.c.fetchone()
     db.c.execute("SELECT type, base_hp, max_hp FROM enemies WHERE id = ?", (enemy_id,))
@@ -191,6 +231,12 @@ def draw_combat_screen(player_id, enemy_id, events, active_defense, log):
     print()
     print(f"  [ {estats['type']} ]")
     print(f"  HP: {hp_bar(estats['base_hp'], estats['max_hp'])}")
+    statuses = db.get_statuses(player_id)
+    if statuses:
+        status_str = "  ".join(f"[{s['effect']}:{s['duration']}]" for s in statuses)
+        print(f"  {status_str}")
+    if combo > 0:
+        print(f"  [ COMBO: {combo}/3 ]")
     print()
 
     if events["blood_moon"]:
@@ -220,12 +266,32 @@ def draw_combat_screen(player_id, enemy_id, events, active_defense, log):
 
 
 def player_attack(player_id, enemy_id):
-    db.c.execute("SELECT base_hit, bonus_hit FROM player_stats WHERE player_id = ?", (player_id,))
+    db.c.execute("SELECT base_hit, bonus_hit, base_crit, bonus_crit FROM player_stats WHERE player_id = ?", (player_id,))
     pstats = db.c.fetchone()
     dmg = max(1, pstats["base_hit"] + pstats["bonus_hit"] - random.randint(0, 5))
+    total_crit = pstats["base_crit"] + pstats["bonus_crit"]
+    crit_chance = min(0.60, total_crit * 0.005)
+    is_crit = random.random() < crit_chance
+    if is_crit:
+        dmg *= 2
     db.c.execute("UPDATE enemies SET base_hp = base_hp - ? WHERE id = ?", (dmg, enemy_id))
     db.conn.commit()
-    return dmg
+    db.c.execute("SELECT equipped_weapon FROM players WHERE id = ?", (player_id,))
+    weapon_name = db.c.fetchone()["equipped_weapon"]
+    element_bonus = False
+    if weapon_name:
+        db.c.execute("SELECT element FROM weapons WHERE name = ?", (weapon_name,))
+        w_row = db.c.fetchone()
+        db.c.execute("SELECT type FROM enemies WHERE id = ?", (enemy_id,))
+        enemy_type = db.c.fetchone()["type"]
+        # Strip OVERFLOW boss prefix
+        base_type = enemy_type.replace("OVERFLOW — ", "").strip()
+        enemy_element = db.ENEMY_ELEMENT.get(base_type)
+        weapon_element = w_row["element"] if w_row else None
+        if weapon_element and enemy_element and db.ELEMENT_WEAKNESS.get(weapon_element) == enemy_element:
+            dmg = int(dmg * 1.5)
+            element_bonus = True
+    return dmg, is_crit, element_bonus
 
 
 def enemy_turn(player_id, enemy_id, events, active_defense):
@@ -262,19 +328,135 @@ def enemy_turn(player_id, enemy_id, events, active_defense):
         )
         log.append(f"monster rush second strike: -{extra} hp.")
 
+    # Random status proc — 15% chance
+    if random.random() < 0.15:
+        effect = random.choice(["DEADLOCK", "CORRUPTION", "SEGFAULT"])
+        duration = random.randint(2, 3)
+        db.apply_status(player_id, effect, duration)
+        log.append(f"  you are afflicted with {effect} for {duration} turns!")
+
     db.conn.commit()
     return active_defense, log
 
+def run_rest(player_id, node_name):
+    in_rest = True
+    while in_rest:
+        clear_screen()
+        db.c.execute("""
+            SELECT current_hp, max_hp FROM player_stats WHERE player_id = ?
+        """, (player_id,))
+        row = db.c.fetchone()
+        current_hp, max_hp = row["current_hp"], row["max_hp"]
 
-def run_combat(player_id, enemy_id, events, active_defense=0):
+        print(f"[ {node_name} ] — REST")
+        print(f"  HP: {hp_bar(current_hp, max_hp)}")
+        print()
+        print("  (1) rest — recover 50%-100% of missing HP")
+        print("  (2) change gear")
+        print("  (3) use a potion")
+        print("  (0) leave")
+        print()
+
+        try:
+            choice = int(input("> "))
+        except ValueError:
+            continue
+
+        if choice == 0:
+            in_rest = False
+
+        elif choice == 1:
+            missing = max_hp - current_hp
+            heal_pct = random.uniform(0.5, 1.0)
+            heal_amt = max(1, int(missing * heal_pct))
+            db.c.execute("""
+                UPDATE player_stats SET current_hp = MIN(current_hp + ?, max_hp)
+                WHERE player_id = ?
+            """, (heal_amt, player_id))
+            db.conn.commit()
+            typewrite(f"  you rest. +{heal_amt} hp restored.", delay=0.02)
+            input("\npress enter...")
+
+        elif choice == 2:
+            show_inventory_screen(player_id)
+
+        elif choice == 3:
+            db.c.execute("SELECT rowid, item, amount FROM inventory WHERE player_id = ?", (player_id,))
+            inv_items = db.c.fetchall()
+            potion_names = {p[0] for p in db.get_potion_pool()}
+            potions = [i for i in inv_items if i["item"] in potion_names]
+
+            if not potions:
+                typewrite("  no potions in inventory.", delay=0.02)
+                input("\npress enter...")
+                continue
+
+            clear_screen()
+            print("  [ POTIONS ]")
+            print()
+            for i, pot in enumerate(potions, 1):
+                print(f"  ({i}) {pot['item']}  x{pot['amount']}")
+            print("  (0) back")
+            print()
+
+            try:
+                pchoice = int(input("> "))
+            except ValueError:
+                continue
+
+            if 1 <= pchoice <= len(potions):
+                pot_row = potions[pchoice - 1]
+                result = db.apply_potion(player_id, pot_row["item"])
+                if pot_row["amount"] <= 1:
+                    db.c.execute("DELETE FROM inventory WHERE rowid = ?", (pot_row["rowid"],))
+                else:
+                    db.c.execute(
+                        "UPDATE inventory SET amount = amount - 1 WHERE rowid = ?",
+                        (pot_row["rowid"],)
+                    )
+                db.conn.commit()
+                if result.get("heal"):
+                    typewrite(f"  restored {result['heal']} hp.", delay=0.02)
+                if result.get("bonus_crit"):
+                    typewrite(f"  crit +{result['bonus_crit']}.", delay=0.02)
+                if result.get("defense"):
+                    typewrite(f"  barrier +{result['defense']} (only active in combat).", delay=0.02)
+                input("\npress enter...")
+
+def run_combat(player_id, enemy_id, events, active_defense=0, run_id=None):
     """Turn-based combat. Returns ('win'|'lose'|'flee', active_defense)."""
-    log = []
+    log   = []
+    combo = 0
 
     while True:
+        # ---- Tick statuses at start of each turn ---- #
+        status_log = db.tick_statuses(player_id)
+        if status_log:
+            log += status_log
+
         estats, pstats, potions = draw_combat_screen(
-            player_id, enemy_id, events, active_defense, log
+            player_id, enemy_id, events, active_defense, log, combo
         )
         flee_option = len(potions) + 2
+
+        # ---- DEADLOCK — skip player turn ---- #
+        statuses = db.get_statuses(player_id)
+        if any(s["effect"] == "DEADLOCK" for s in statuses):
+            log = ["DEADLOCK — your turn is skipped!"]
+            active_defense, enemy_log = enemy_turn(player_id, enemy_id, events, active_defense)
+            log += enemy_log
+            db.c.execute("SELECT current_hp FROM player_stats WHERE player_id = ?", (player_id,))
+            if db.c.fetchone()[0] <= 0:
+                db.c.execute("UPDATE players SET deaths = deaths + 1 WHERE id = ?", (player_id,))
+                db.c.execute("UPDATE player_stats SET current_hp = max_hp/2 WHERE player_id = ?", (player_id,))
+                db.c.execute("DELETE FROM status_effects WHERE player_id = ?", (player_id,))
+                db.conn.commit()
+                clear_screen()
+                typewrite("  you have been defeated.", delay=0.03)
+                input("\npress enter...")
+                return "lose", 0
+            combo = 0
+            continue
 
         try:
             action = int(input("> ").strip())
@@ -283,31 +465,37 @@ def run_combat(player_id, enemy_id, events, active_defense=0):
 
         # ---- ATTACK ---- #
         if action == 1:
-            dmg = player_attack(player_id, enemy_id)
-            log = [f"you hit for {dmg} damage."]
+            dmg, is_crit, element_bonus = player_attack(player_id, enemy_id)
+            msg = f"{'CRITICAL! ' if is_crit else ''}you hit for {dmg} damage.{' [EFFECTIVE]' if element_bonus else ''}"
+            log = [msg]
 
             db.c.execute("SELECT base_hp FROM enemies WHERE id = ?", (enemy_id,))
             if db.c.fetchone()[0] <= 0:
                 db.c.execute("SELECT experience_drop FROM enemies WHERE id = ?", (enemy_id,))
                 xp = db.c.fetchone()[0]
-                gold_drop = random.randint(8, 30)
+                bytes_drop = random.randint(8, 30)
                 db.c.execute(
                     "UPDATE players SET experience = experience + ?, kills = kills + 1 WHERE id = ?",
                     (xp, player_id)
                 )
                 db.c.execute(
-                    "UPDATE player_stats SET gold = gold + ? WHERE player_id = ?",
-                    (gold_drop, player_id)
+                    "UPDATE player_stats SET bytes = bytes + ? WHERE player_id = ?",
+                    (bytes_drop, player_id)
                 )
                 db.conn.commit()
+                if run_id:
+                    db.record_run_kill(run_id)
+                    db.record_run_bytes(run_id, bytes_drop)
 
+                db.c.execute("DELETE FROM status_effects WHERE player_id = ?", (player_id,))
+                db.conn.commit()
                 drop = db.enemy_drop_potion(player_id)
 
                 clear_screen()
                 ascii_art.print_enemy_art(estats["type"])
                 print()
                 typewrite(f"  enemy defeated!", delay=0.02)
-                typewrite(f"  +{xp} xp   +{gold_drop} gold", delay=0.02)
+                typewrite(f"  +{xp} xp   +{bytes_drop} bytes", delay=0.02)
                 db.c.execute("SELECT level, experience FROM players WHERE id = ?", (player_id,))
                 row = db.c.fetchone()
                 if row[1] >= db.experience_needed_for_next_level(row[0]):
@@ -317,23 +505,39 @@ def run_combat(player_id, enemy_id, events, active_defense=0):
                 input("\npress enter...")
                 return "win", active_defense
 
-            # Enemy retaliates
-            active_defense, enemy_log = enemy_turn(
-                player_id, enemy_id, events, active_defense
-            )
+            # Snapshot HP before enemy turn
+            db.c.execute("SELECT current_hp FROM player_stats WHERE player_id = ?", (player_id,))
+            hp_before = db.c.fetchone()[0]
+
+            active_defense, enemy_log = enemy_turn(player_id, enemy_id, events, active_defense)
             log += enemy_log
 
             db.c.execute("SELECT current_hp FROM player_stats WHERE player_id = ?", (player_id,))
-            if db.c.fetchone()[0] <= 0:
+            hp_after = db.c.fetchone()[0]
+
+            if hp_after <= 0:
                 db.c.execute("UPDATE players SET deaths = deaths + 1 WHERE id = ?", (player_id,))
-                db.c.execute(
-                    "UPDATE player_stats SET current_hp = max_hp/2 WHERE player_id = ?", (player_id,)
-                )
+                db.c.execute("UPDATE player_stats SET current_hp = max_hp/2 WHERE player_id = ?", (player_id,))
+                db.c.execute("DELETE FROM status_effects WHERE player_id = ?", (player_id,))
                 db.conn.commit()
                 clear_screen()
                 typewrite("  you have been defeated.", delay=0.03)
                 input("\npress enter...")
                 return "lose", 0
+
+            # ---- COMBO tracking ---- #
+            if hp_after < hp_before:
+                combo = 0
+            else:
+                combo += 1
+                if combo >= 3:
+                    db.c.execute("SELECT base_hit, bonus_hit FROM player_stats WHERE player_id = ?", (player_id,))
+                    ps = db.c.fetchone()
+                    chain_dmg = max(1, ps["base_hit"] + ps["bonus_hit"])
+                    db.c.execute("UPDATE enemies SET base_hp = base_hp - ? WHERE id = ?", (chain_dmg, enemy_id))
+                    db.conn.commit()
+                    log.append(f"QUERY CHAIN! bonus strike for {chain_dmg} damage.")
+                    combo = 0
 
         # ---- USE POTION ---- #
         elif 2 <= action <= len(potions) + 1:
@@ -354,8 +558,8 @@ def run_combat(player_id, enemy_id, events, active_defense=0):
                 log.append(f"restored {result['heal']} hp.")
             if result.get("bonus_hit"):
                 log.append(f"attack surges +{result['bonus_hit']} hit.")
-            if result.get("bonus_wisdom"):
-                log.append(f"clarity +{result['bonus_wisdom']} wisdom.")
+            if result.get("bonus_crit"):
+                log.append(f"crit +{result['bonus_crit']}.")
             if result.get("defense"):
                 active_defense += result["defense"]
                 log.append(f"barrier active: {active_defense} reduction.")
@@ -366,9 +570,10 @@ def run_combat(player_id, enemy_id, events, active_defense=0):
             ehit = db.c.fetchone()[0]
             flee_dmg = max(0, ehit // 2 - random.randint(0, 3))
             db.c.execute(
-                "UPDATE player_stats SET current_hp = current_hp - ? WHERE player_id = ?",
+                "UPDATE player_stats SET current_hp = MAX(1, current_hp - ?) WHERE player_id = ?",
                 (flee_dmg, player_id)
             )
+            db.c.execute("DELETE FROM status_effects WHERE player_id = ?", (player_id,))
             db.conn.commit()
             clear_screen()
             typewrite(f"  you flee — taking {flee_dmg} damage on the way out.", delay=0.02)
@@ -376,21 +581,253 @@ def run_combat(player_id, enemy_id, events, active_defense=0):
             return "flee", active_defense
 
 
+def show_npc(player_id, events):
+    db.c.execute("SELECT kills, deaths FROM players WHERE id = ?", (player_id,))
+    row = db.c.fetchone()
+    kills  = row["kills"]
+    deaths = row["deaths"]
+
+    clear_screen()
+    print("  [ ARCHIVIST ]")
+    print()
+
+    # Event reactions take priority
+    if events.get("blood_moon"):
+        typewrite("  the moon runs red. i have not seen this in many cycles.", delay=0.02)
+    elif events.get("flood_omnya"):
+        typewrite("  the waters rise. some paths are lost to us now.", delay=0.02)
+    elif events.get("monster_rush"):
+        typewrite("  they come in waves. do not let them surround you.", delay=0.02)
+    elif events.get("solar_eclipse"):
+        typewrite("  the light dims. The Indexer's power swells in the dark.", delay=0.02)
+    elif events.get("fateful_day"):
+        typewrite("  the markets overflow today. rare things surface rarely.", delay=0.02)
+    # Kill/death reactions
+    elif kills == 0:
+        typewrite("  you have not yet drawn blood. the index waits.", delay=0.02)
+    elif deaths > kills:
+        typewrite(f"  {deaths} deaths. {kills} kills. the corruption is winning.", delay=0.02)
+    elif kills >= 50:
+        typewrite(f"  {kills} processes terminated. the schema remembers.", delay=0.02)
+    elif kills >= 20:
+        typewrite(f"  you have cut a path through {kills} enemies. keep going.", delay=0.02)
+    elif deaths == 0:
+        typewrite(f"  {kills} kills. no deaths. impressive uptime.", delay=0.02)
+    else:
+        typewrite(f"  {kills} kills. {deaths} deaths. the balance shifts.", delay=0.02)
+
+    print()
+    input("  press enter...")
+
+def show_ending(player_id):
+    db.c.execute("SELECT username FROM players WHERE id = ?", (player_id,))
+    username = db.c.fetchone()["username"]
+
+    clear_screen()
+    time.sleep(0.5)
+    typewrite("  all OVERFLOW bosses have been terminated.", delay=0.03)
+    time.sleep(0.6)
+    typewrite("  the deep layers fall silent.", delay=0.03)
+    time.sleep(0.8)
+    typewrite("  initiating schema migration...", delay=0.04)
+    time.sleep(0.5)
+    typewrite("  > DROP TABLE corruption;", delay=0.05)
+    time.sleep(0.4)
+    typewrite("  > ALTER TABLE world ADD COLUMN order TEXT DEFAULT 'restored';", delay=0.04)
+    time.sleep(0.4)
+    typewrite("  > COMMIT;", delay=0.06)
+    time.sleep(0.8)
+    typewrite("  migration complete.", delay=0.04)
+    time.sleep(0.6)
+    typewrite(f"  process {username} has fulfilled its purpose.", delay=0.03)
+    time.sleep(0.4)
+    typewrite("  the Schema holds.", delay=0.05)
+    time.sleep(1.0)
+    input("\n  press enter...")
+    db.finish_run(run_id, "win")
+    apply_solar_eclipse(player_id, events, remove=True)
+
+def run_tutorial():
+    clear_screen()
+    typewrite("  [ TUTORIAL — TRAINING SEQUENCE ]", delay=0.03)
+    typewrite("  this is a simulated run. no progress will be saved.", delay=0.02)
+    print()
+    input("  press enter to begin...")
+
+    # ------------------------------------------------------------------ #
+    #  PAGE 1 — Classes and stats
+    # ------------------------------------------------------------------ #
+    clear_screen()
+    print("  [ CLASSES ]")
+    print()
+    typewrite("  there are three classes:", delay=0.02)
+    print()
+    typewrite("  THE EXECUTOR  — high HP, strong hits. built to endure.", delay=0.02)
+    typewrite("  THE INDEXER   — low HP, high crit. lands devastating strikes.", delay=0.02)
+    typewrite("  THE TRIGGER   — balanced. adapts to any situation.", delay=0.02)
+    print()
+    typewrite("  your stats:", delay=0.02)
+    print()
+    print("  HP     — how much damage you can take before falling.")
+    print("  HIT    — base damage output per attack.")
+    print("  CRIT   — chance to deal 2x damage. also reduces trap damage.")
+    print("  bytes   — used to buy gear and potions at shops.")
+    print()
+    input("  press enter to continue...")
+
+    # ------------------------------------------------------------------ #
+    #  PAGE 2 — Encounter types
+    # ------------------------------------------------------------------ #
+    clear_screen()
+    print("  [ ENCOUNTER TYPES ]")
+    print()
+    print("  each node in a run is one of these:")
+    print()
+    print("  TRANSACTION      — a shop. buy gear, potions, or sell items.")
+    print("  QUERY            — standard combat. defeat the enemy to proceed.")
+    print("  STORED_PROCEDURE — a dungeon. multiple rooms, guaranteed loot at the end.")
+    print("  DEADLOCK         — a dungeon where enemies hit twice as hard.")
+    print("  CONSTRAINT       — triggers a world event, then combat.")
+    print("  OVERFLOW         — a boss. much stronger. drops unique loot.")
+    print("  REST             — a checkpoint. heal, change gear, use potions.")
+    print()
+    typewrite("  clearing all OVERFLOW bosses triggers the ending.", delay=0.02)
+    print()
+    input("  press enter to continue...")
+
+    # ------------------------------------------------------------------ #
+    #  PAGE 3 — Combat mechanics (simulated fight)
+    # ------------------------------------------------------------------ #
+    clear_screen()
+    print("  [ COMBAT ]")
+    print()
+    typewrite("  let's walk through a simulated fight.", delay=0.02)
+    print()
+    input("  press enter to continue...")
+
+    # Simulate a combat screen
+    clear_screen()
+    print("  [ Cached Queries ]  — QUERY")
+    print()
+    print("  [ ENEMY: Null Pointer ]")
+    print("  HP: [████████████████████] 80/80")
+    print()
+    print("  [ YOU ]   [████████████████████] 120/120")
+    print()
+    print("  (1) attack")
+    print("  (2) use Minor Restore  x1")
+    print("  (3) flee")
+    print()
+    typewrite("  (1) attack — deals HIT damage. chance to CRIT (2x) based on your crit stat.", delay=0.02)
+    print()
+    input("  press enter to continue...")
+
+    clear_screen()
+    print("  [ COMBAT — COMBO SYSTEM ]")
+    print()
+    typewrite("  if you take no damage for 3 turns in a row:", delay=0.02)
+    typewrite("  a QUERY CHAIN fires — a free bonus strike.", delay=0.02)
+    print()
+    print("  [ COMBO: 2/3 ]  ← this counter builds each clean turn")
+    print()
+    typewrite("  taking any damage resets the combo to 0.", delay=0.02)
+    print()
+    input("  press enter to continue...")
+
+    clear_screen()
+    print("  [ COMBAT — ELEMENTS ]")
+    print()
+    typewrite("  weapons and enemies each have an element:", delay=0.02)
+    print()
+    print("  QUERY  →  beats  LOCK")
+    print("  LOCK   →  beats  OVERFLOW")
+    print("  OVERFLOW → beats  NULL")
+    print("  NULL   →  beats  QUERY")
+    print()
+    typewrite("  hitting an enemy with its weakness deals 1.5x damage.", delay=0.02)
+    typewrite("  this shows as [EFFECTIVE] in the combat log.", delay=0.02)
+    print()
+    input("  press enter to continue...")
+
+    clear_screen()
+    print("  [ COMBAT — STATUS EFFECTS ]")
+    print()
+    typewrite("  enemies have a 15% chance to inflict a status on hit:", delay=0.02)
+    print()
+    print("  DEADLOCK    — your next turn is skipped entirely.")
+    print("  CORRUPTION  — burns 5% of your max HP each turn.")
+    print("  SEGFAULT    — drains a random amount of HIT or CRIT.")
+    print()
+    typewrite("  statuses expire after 2-3 turns.", delay=0.02)
+    typewrite("  they clear on combat end regardless.", delay=0.02)
+    print()
+    input("  press enter to continue...")
+
+    # ------------------------------------------------------------------ #
+    #  PAGE 4 — Items and gear
+    # ------------------------------------------------------------------ #
+    clear_screen()
+    print("  [ ITEMS AND GEAR ]")
+    print()
+    typewrite("  weapons and armors each have:", delay=0.02)
+    print()
+    print("  CLASS TYPE     — matching your class gives bonus stats.")
+    print("  HIT MULTIPLIER — multiplies your base HIT stat when equipped.")
+    print("  BONUS HP       — adds directly to your max HP.")
+    print("  BONUS HIT      — flat addition to your hit stat.")
+    print("  BONUS CRIT     — flat addition to your crit stat.")
+    print("  ELEMENT        — determines effectiveness vs enemy types.")
+    print()
+    typewrite("  gear scales with your level — higher level runs drop stronger items.", delay=0.02)
+    print()
+    typewrite("  potions restore a % of your max HP or boost stats temporarily.", delay=0.02)
+    print()
+    input("  press enter to continue...")
+
+    # ------------------------------------------------------------------ #
+    #  PAGE 5 — Events
+    # ------------------------------------------------------------------ #
+    clear_screen()
+    print("  [ WORLD EVENTS ]")
+    print()
+    typewrite("  CONSTRAINT nodes trigger world events that affect the entire run:", delay=0.02)
+    print()
+    print("  BLOOD MOON    — all enemies deal double damage.")
+    print("  SOLAR ECLIPSE — The Indexer's crit stat doubles.")
+    print("  FLOOD OF OMNYA — CONSTRAINT paths become impassable.")
+    print("  MONSTER RUSH  — enemies strike twice each turn.")
+    print("  FATEFUL DAY   — shops stock rare, high-quality gear.")
+    print()
+    typewrite("  events expire after 10 combat encounters.", delay=0.02)
+    typewrite("  multiple events can be active at once.", delay=0.02)
+    print()
+    input("  press enter to continue...")
+
+    # ------------------------------------------------------------------ #
+    #  DONE
+    # ------------------------------------------------------------------ #
+    clear_screen()
+    typewrite("  training sequence complete.", delay=0.03)
+    print()
+    typewrite("  the index awaits.", delay=0.03)
+    print()
+    input("  press enter to return to menu...")
+
 # ------------------------------------------------------------------ #
 #  DUNGEON  (STORED_PROCEDURE / DEADLOCK)                             #
 # ------------------------------------------------------------------ #
 
 DUNGEON_ROOM_COUNT  = 3   # non-boss rooms before the final chamber
-TRAP_DAMAGE_PERCENT = 0.15  # trap deals 15% of max HP
+TRAP_DAMAGE_PERCENT = random.random()
 
 
-def run_dungeon(player_id, node_name, enc_type, events):
+def run_dungeon(player_id, node_name, enc_type, events, run_id=None):
     """Multi-room dungeon crawl for STORED_PROCEDURE (2) and DEADLOCK (3) nodes.
 
     Layout:
       Rooms 1..DUNGEON_ROOM_COUNT — each has a random encounter:
         * combat     (most common)
-        * trap       — roll Wisdom to reduce damage; fail = full hit
+        * trap       — roll crit to reduce damage; fail = full hit
         * rest site  — small heal, no enemy
       Final chamber — guaranteed combat + guaranteed loot INSERT on clear
 
@@ -439,21 +876,21 @@ def run_dungeon(player_id, node_name, enc_type, events):
 
         # ---- TRAP ROOM ---- #
         if room_type == "trap":
-            db.c.execute("SELECT base_wisdom + bonus_wisdom AS wis FROM player_stats WHERE player_id = ?",
+            db.c.execute("SELECT base_crit + bonus_crit AS crit FROM player_stats WHERE player_id = ?",
                          (player_id,))
-            wisdom = db.c.fetchone()["wis"]
+            crit = db.c.fetchone()["crit"]
             db.c.execute("SELECT max_hp FROM player_stats WHERE player_id = ?", (player_id,))
             max_hp = db.c.fetchone()["max_hp"]
 
             trap_dmg_full = max(5, int(max_hp * TRAP_DAMAGE_PERCENT))
-            # Wisdom check: each point of wisdom is a 0.5% chance to halve damage (cap 60%)
-            dodge_chance = min(0.60, wisdom * 0.005)
+            # crit check: each point of crit is a 0.5% chance to halve damage (cap 60%)
+            dodge_chance = min(0.60, crit * 0.005)
             dodged = random.random() < dodge_chance
             trap_dmg = trap_dmg_full // 2 if dodged else trap_dmg_full
 
             typewrite("  CONSTRAINT VIOLATION — a trap fires.", delay=0.02)
             if dodged:
-                typewrite(f"  your wisdom lets you sidestep the worst of it: -{trap_dmg} hp.", delay=0.02)
+                typewrite(f"  your crit lets you sidestep the worst of it: -{trap_dmg} hp.", delay=0.02)
             else:
                 typewrite(f"  you walk straight into it: -{trap_dmg} hp.", delay=0.02)
 
@@ -496,7 +933,7 @@ def run_dungeon(player_id, node_name, enc_type, events):
                 print()
 
             db.apply_event_combat_modifiers(enemy_id, events)
-            result, active_defense = run_combat(player_id, enemy_id, events, active_defense)
+            result, active_defense = run_combat(player_id, enemy_id, events, active_defense, run_id=run_id)
 
             if result == "lose":
                 return False
@@ -520,89 +957,122 @@ def run_dungeon(player_id, node_name, enc_type, events):
     print()
     typewrite("  the final chamber falls silent.", delay=0.02)
 
-    # Guaranteed loot: pick an unfound gear piece
-    db.c.execute("SELECT id, name FROM weapons WHERE found = 0 ORDER BY RANDOM() LIMIT 1")
-    loot_w = db.c.fetchone()
-    db.c.execute("SELECT id, name FROM armors  WHERE found = 0 ORDER BY RANDOM() LIMIT 1")
-    loot_a = db.c.fetchone()
-    loot_choice = random.choice([l for l in [loot_w, loot_a] if l])
-
-    if loot_choice:
-        if loot_choice == loot_w:
-            db.c.execute("UPDATE weapons SET found = 1 WHERE id = ?", (loot_choice["id"],))
-        else:
-            db.c.execute("UPDATE armors  SET found = 1 WHERE id = ?", (loot_choice["id"],))
-        db.add_item(player_id, loot_choice["name"], 1)
-        db.conn.commit()
-        typewrite(f"  guaranteed loot: {loot_choice['name']}", delay=0.02)
+    db.c.execute("SELECT level FROM players WHERE id = ?", (player_id,))
+    player_level = db.c.fetchone()["level"]
+    _, loot_name, _ = db.generate_gear(player_level)
+    db.add_item(player_id, loot_name, 1)
+    db.conn.commit()
+    typewrite(f"  guaranteed loot: {loot_name}", delay=0.02)
 
     input("\npress enter...")
     return True
 
 
 # ------------------------------------------------------------------ #
-#  SHOP                                                                #
+#  SHOP                                                              #
 # ------------------------------------------------------------------ #
 
-SHOP_STOCK_SIZE = 4
+SHOP_STOCK_SIZE = random.randint(1,4)
 
 
-def run_shop(player_id, node_name, events):
+def run_shop(player_id, node_name, events, path_id=None, run_seed=None):
     fateful_day = events["fateful_day"]
 
-    db.c.execute(
-        "SELECT * FROM weapons WHERE found = 0 ORDER BY RANDOM() LIMIT ?",
-        (SHOP_STOCK_SIZE * 3,)
-    )
-    weapon_pool = list(db.c.fetchall())
+    # Try to load a previously saved stock for this shop
+    saved = db.load_shop_stock(path_id) if path_id else None
 
-    db.c.execute(
-        "SELECT * FROM armors WHERE found = 0 ORDER BY RANDOM() LIMIT ?",
-        (SHOP_STOCK_SIZE * 3,)
-    )
-    armor_pool = list(db.c.fetchall())
-
-    combined = weapon_pool + armor_pool
-    if fateful_day:
-        def item_score(i):
-            return i["bonus_hp"] + i["bonus_hit"] + i["bonus_wisdom"] + 1
-        scores     = [item_score(i) for i in combined]
-        gear_stock = random.choices(combined, weights=scores, k=min(SHOP_STOCK_SIZE, len(combined)))
+    if saved:
+        # Reconstruct gear_stock and potion_stock from saved rows
+        potion_names = {p[0] for p in db.get_potion_pool()}
+        potion_pool_map = {p[0]: p for p in db.get_potion_pool()}
+        gear_stock   = []
+        potion_stock = []
+        weapon_pool  = []
+        armor_pool   = []
+        for item_type, item_name in saved:
+            if item_type == "weapon":
+                db.c.execute("SELECT * FROM weapons WHERE name = ?", (item_name,))
+                row = db.c.fetchone()
+                if row:
+                    gear_stock.append(row)
+                    weapon_pool.append(row)
+            elif item_type == "armor":
+                db.c.execute("SELECT * FROM armors WHERE name = ?", (item_name,))
+                row = db.c.fetchone()
+                if row:
+                    gear_stock.append(row)
+                    armor_pool.append(row)
+            elif item_type == "potion" and item_name in potion_pool_map:
+                potion_stock.append(potion_pool_map[item_name])
     else:
-        gear_stock = random.sample(combined, min(SHOP_STOCK_SIZE, len(combined)))
+        # Roll fresh stock, using a shop-specific RNG derived from run seed + path_id
+        shop_rng = random.Random((run_seed or 0) ^ (path_id or 0))
 
-    all_potions  = db.get_potion_pool()
-    if fateful_day:
-        pw = [p[7] for p in all_potions]
-    else:
-        pw = [1 / (p[7] + 1) * 100 for p in all_potions]
-    potion_stock = random.choices(all_potions, weights=pw, k=SHOP_STOCK_SIZE)
+        db.c.execute("SELECT level FROM players WHERE id = ?", (player_id,))
+        player_level = db.c.fetchone()["level"]
+
+        weapon_pool = []
+        armor_pool  = []
+        for _ in range(SHOP_STOCK_SIZE * 2):
+            _, name, _ = db.generate_gear(player_level, "weapon")
+            db.c.execute("SELECT * FROM weapons WHERE name = ?", (name,))
+            weapon_pool.append(db.c.fetchone())
+        for _ in range(SHOP_STOCK_SIZE * 2):
+            _, name, _ = db.generate_gear(player_level, "armor")
+            db.c.execute("SELECT * FROM armors WHERE name = ?", (name,))
+            armor_pool.append(db.c.fetchone())
+
+        combined = weapon_pool + armor_pool
+        if fateful_day:
+            def item_score(i):
+                return i["bonus_hp"] + i["bonus_hit"] + i["bonus_crit"] + 1
+            scores     = [item_score(i) for i in combined]
+            gear_stock = shop_rng.choices(combined, weights=scores, k=min(SHOP_STOCK_SIZE, len(combined)))
+        else:
+            gear_stock = shop_rng.sample(combined, min(SHOP_STOCK_SIZE, len(combined)))
+
+        all_potions  = db.get_potion_pool()
+        if fateful_day:
+            pw = [p[7] for p in all_potions]
+        else:
+            pw = [1 / (p[7] + 1) * 100 for p in all_potions]
+        potion_stock = shop_rng.choices(all_potions, weights=pw, k=SHOP_STOCK_SIZE)
+
+        # Persist the rolled stock
+        if path_id:
+            stock_to_save = []
+            for item in gear_stock:
+                kind = "weapon" if item in weapon_pool else "armor"
+                stock_to_save.append((kind, item["name"]))
+            for pot in potion_stock:
+                stock_to_save.append(("potion", pot[0]))
+            db.save_shop_stock(path_id, stock_to_save)
 
     def gear_price(item):
         return max(10, (item["bonus_hp"] // 10) + item["bonus_hit"]
-                   + item["bonus_wisdom"] * 2 + item["hit_mult"] * 3)
+                   + item["bonus_crit"] * 2 + item["hit_mult"] * 3)
 
     def gear_sell_price(item):
         return max(5, gear_price(item) // 2)
 
-    def show_gear_stats(item, price, gold):
+    def show_gear_stats(item, price, bytes):
         kind       = "WEAPON" if item in weapon_pool else "ARMOR"
-        affordable = "buy" if gold >= price else "can't afford"
+        affordable = "buy" if bytes >= price else "can't afford"
         print(f"  [{kind}] {item['name']}")
         print(f"  Class:          {item['class_type']}")
         print(f"  Hit Multiplier: {item['hit_mult']}")
         print(f"  Bonus HP:       {item['bonus_hp']}")
         print(f"  Bonus Hit:      {item['bonus_hit']}")
-        print(f"  Bonus Wisdom:   {item['bonus_wisdom']}")
+        print(f"  Bonus crit:   {item['bonus_crit']}")
         print(f"  Price:          {price}g  [{affordable}]")
 
-    def show_potion_stats(pot, gold):
-        pname, ptype, pheal, pbhit, pbwis, pbdef, pdur, pprice = pot
-        affordable = "buy" if gold >= pprice else "can't afford"
+    def show_potion_stats(pot, bytes):
+        pname, ptype, pheal, pbhit, pbcrit, pbdef, pdur, pprice = pot
+        affordable = "buy" if bytes >= pprice else "can't afford"
         print(f"  [POTION] {pname}  ({ptype})")
         if pheal: print(f"  Heal:    +{pheal} hp")
         if pbhit: print(f"  Attack:  +{pbhit} hit  (lasts {pdur} rounds)")
-        if pbwis: print(f"  Wisdom:  +{pbwis} wis  (lasts {pdur} rounds)")
+        if pbcrit: print(f"  crit:  +{pbcrit} crit  (lasts {pdur} rounds)")
         if pbdef: print(f"  Barrier: +{pbdef} dmg reduction  (lasts {pdur} rounds)")
         print(f"  Price:   {pprice}g  [{affordable}]")
 
@@ -610,8 +1080,8 @@ def run_shop(player_id, node_name, events):
     while in_shop:
         clear_screen()
 
-        db.c.execute("SELECT gold FROM player_stats WHERE player_id = ?", (player_id,))
-        gold = db.c.fetchone()["gold"]
+        db.c.execute("SELECT bytes FROM player_stats WHERE player_id = ?", (player_id,))
+        bytes = db.c.fetchone()["bytes"]
 
         db.c.execute("SELECT rowid, item, amount FROM inventory WHERE player_id = ?", (player_id,))
         inv_items = db.c.fetchall()
@@ -623,7 +1093,7 @@ def run_shop(player_id, node_name, events):
         print(f"[ {node_name} ] — TRANSACTION")
         if fateful_day:
             print("  * FATEFUL DAY — rare stock available *")
-        print(f"  gold: {gold}")
+        print(f"  bytes: {bytes}")
         print()
 
         print("  [ FOR SALE — GEAR ]")
@@ -631,22 +1101,22 @@ def run_shop(player_id, node_name, events):
             for i, item in enumerate(gear_stock, 1):
                 kind  = "WPN" if item in weapon_pool else "ARM"
                 price = gear_price(item)
-                tag   = "" if gold >= price else " (can't afford)"
-                print(f"  ({i}) [{kind}] {item['name']}  —  {item['class_type']}  —  {price}g{tag}")
+                tag   = "" if bytes >= price else " (can't afford)"
+                print(f"  ({i}) [{kind}] {item['name']}  —  {item['class_type']}  —  {price}b{tag}")
         else:
             print("  (no gear in stock)")
         print()
 
         print("  [ FOR SALE — POTIONS ]")
         for j, pot in enumerate(potion_stock, gear_end + 1):
-            pname, ptype, pheal, pbhit, pbwis, pbdef, pdur, pprice = pot
+            pname, ptype, pheal, pbhit, pbcrit, pbdef, pdur, pprice = pot
             effects = []
-            if pheal: effects.append(f"+{pheal}hp")
-            if pbhit: effects.append(f"+{pbhit}hit")
-            if pbwis: effects.append(f"+{pbwis}wis")
+            if pheal: effects.append(f"%{pheal}hp")
+            if pbhit: effects.append(f"%{pbhit}hit")
+            if pbcrit: effects.append(f"%{pbcrit}crit")
             if pbdef: effects.append(f"+{pbdef}barrier")
-            tag = "" if gold >= pprice else " (can't afford)"
-            print(f"  ({j}) [POT] {pname}  —  {', '.join(effects)}  —  {pprice}g{tag}")
+            tag = "" if bytes >= pprice else " (can't afford)"
+            print(f"  ({j}) [POT] {pname}  —  {', '.join(effects)}  —  {pprice}b{tag}")
         print()
 
         print("  [ SELL ]")
@@ -658,7 +1128,7 @@ def run_shop(player_id, node_name, events):
                 adata = db.c.fetchone()
                 idata = wdata or adata
                 sv    = gear_sell_price(idata) if idata else 5
-                print(f"  ({k}) {inv_row['item']}  x{inv_row['amount']}  —  sell for {sv}g")
+                print(f"  ({k}) {inv_row['item']}  x{inv_row['amount']}  —  sell for {sv}b")
         else:
             print("  (inventory empty)")
         print()
@@ -677,7 +1147,7 @@ def run_shop(player_id, node_name, events):
             item  = gear_stock[choice - 1]
             price = gear_price(item)
             clear_screen()
-            show_gear_stats(item, price, gold)
+            show_gear_stats(item, price, bytes)
             print()
             print("  (1) buy")
             print("  (2) back")
@@ -687,11 +1157,11 @@ def run_shop(player_id, node_name, events):
                 confirm = 2
 
             if confirm == 1:
-                if gold < price:
-                    typewrite("  not enough gold.", delay=0.02)
+                if bytes < price:
+                    typewrite("  not enough bytes.", delay=0.02)
                     input("\npress enter...")
                 else:
-                    db.c.execute("UPDATE player_stats SET gold = gold - ? WHERE player_id = ?",
+                    db.c.execute("UPDATE player_stats SET bytes = bytes - ? WHERE player_id = ?",
                                  (price, player_id))
                     db.add_item(player_id, item["name"], 1)
                     if item in weapon_pool:
@@ -700,14 +1170,14 @@ def run_shop(player_id, node_name, events):
                         db.c.execute("UPDATE armors  SET found = 1 WHERE id = ?", (item["id"],))
                     db.conn.commit()
                     gear_stock.remove(item)
-                    typewrite(f"  bought {item['name']} for {price}g.", delay=0.02)
+                    typewrite(f"  bought {item['name']} for {price}b.", delay=0.02)
                     input("\npress enter...")
 
         elif gear_end < choice <= potion_end:
             pot    = potion_stock[choice - gear_end - 1]
             pprice = pot[7]
             clear_screen()
-            show_potion_stats(pot, gold)
+            show_potion_stats(pot, bytes)
             print()
             print("  (1) buy")
             print("  (2) back")
@@ -717,15 +1187,15 @@ def run_shop(player_id, node_name, events):
                 confirm = 2
 
             if confirm == 1:
-                if gold < pprice:
-                    typewrite("  not enough gold.", delay=0.02)
+                if bytes < pprice:
+                    typewrite("  not enough bytes.", delay=0.02)
                     input("\npress enter...")
                 else:
-                    db.c.execute("UPDATE player_stats SET gold = gold - ? WHERE player_id = ?",
+                    db.c.execute("UPDATE player_stats SET bytes = bytes - ? WHERE player_id = ?",
                                  (pprice, player_id))
                     db.add_item(player_id, pot[0], 1)
                     db.conn.commit()
-                    typewrite(f"  bought {pot[0]} for {pprice}g.", delay=0.02)
+                    typewrite(f"  bought {pot[0]} for {pprice}b.", delay=0.02)
                     input("\npress enter...")
 
         elif potion_end < choice <= sell_end:
@@ -739,10 +1209,10 @@ def run_shop(player_id, node_name, events):
 
             clear_screen()
             if idata:
-                show_gear_stats(idata, gear_price(idata), gold)
+                show_gear_stats(idata, sv, bytes)
             else:
                 print(f"  {inv_row['item']}")
-            print(f"  Sell value: {sv}g")
+            print(f"  Sell value: {sv}b")
             print()
             print("  (1) sell")
             print("  (2) back")
@@ -752,7 +1222,7 @@ def run_shop(player_id, node_name, events):
                 confirm = 2
 
             if confirm == 1:
-                db.c.execute("UPDATE player_stats SET gold = gold + ? WHERE player_id = ?",
+                db.c.execute("UPDATE player_stats SET bytes = bytes + ? WHERE player_id = ?",
                              (sv, player_id))
                 if inv_row["amount"] <= 1:
                     db.c.execute("DELETE FROM inventory WHERE rowid = ?", (inv_row["rowid"],))
@@ -762,7 +1232,7 @@ def run_shop(player_id, node_name, events):
                         (inv_row["rowid"],)
                     )
                 db.conn.commit()
-                typewrite(f"  sold {inv_row['item']} for {sv}g.", delay=0.02)
+                typewrite(f"  sold {inv_row['item']} for {sv}b.", delay=0.02)
                 input("\npress enter...")
 
 
@@ -791,10 +1261,10 @@ def apply_solar_eclipse(player_id, events, remove=False):
     if class_name != "The Indexer":
         return
     if remove:
-        db.c.execute("UPDATE player_stats SET bonus_wisdom = bonus_wisdom / 2 WHERE player_id = ?",
+        db.c.execute("UPDATE player_stats SET bonus_crit = bonus_crit / 2 WHERE player_id = ?",
                      (player_id,))
     else:
-        db.c.execute("UPDATE player_stats SET bonus_wisdom = bonus_wisdom * 2 WHERE player_id = ?",
+        db.c.execute("UPDATE player_stats SET bonus_crit = bonus_crit * 2 WHERE player_id = ?",
                      (player_id,))
     db.conn.commit()
 
@@ -802,7 +1272,7 @@ def apply_solar_eclipse(player_id, events, remove=False):
 def print_active_events(events):
     labels = {
         "blood_moon":    "BLOOD MOON    — enemies strike with doubled power",
-        "solar_eclipse": "SOLAR ECLIPSE — The Indexer's wisdom surges",
+        "solar_eclipse": "SOLAR ECLIPSE — The Indexer's crit surges",
         "flood_omnya":   "FLOOD OF OMNYA — some paths are inaccessible",
         "monster_rush":  "MONSTER RUSH  — enemies attack twice per round",
         "fateful_day":   "FATEFUL DAY   — rare loot floods the markets",
@@ -816,7 +1286,7 @@ def print_active_events(events):
         print()
 
 
-def run_constraint_encounter(player_id, node_name, events):
+def run_constraint_encounter(player_id, node_name, events, run_id=None):
     """CONSTRAINT node — fire a world event, then a combat encounter with modifiers applied."""
     clear_screen()
     typewrite(f"  [ {node_name} ] — CONSTRAINT", delay=0.02)
@@ -843,7 +1313,7 @@ def run_constraint_encounter(player_id, node_name, events):
 
     enemy_id = db.generate_enemy(player_id)
     db.apply_event_combat_modifiers(enemy_id, events)
-    result_combat, _ = run_combat(player_id, enemy_id, events)
+    result_combat, _ = run_combat(player_id, enemy_id, events, run_id=run_id)
 
     # Tick the encounter counter — events may expire
     was_reset = db.tick_event_counter()
@@ -943,26 +1413,78 @@ def _inspect_item(player_id, selected_item, items):
         action = input("> ")
 
         if action == "1":
-            if weapon_data:
+            potion_names = {p[0] for p in db.get_potion_pool()}
+            if item_name in potion_names:
+                result = db.apply_potion(player_id, item_name)
+                if selected_item["amount"] <= 1:
+                    db.c.execute("DELETE FROM inventory WHERE rowid = ?", (selected_item["rowid"],))
+                else:
+                    db.c.execute(
+                        "UPDATE inventory SET amount = amount - 1 WHERE rowid = ?",
+                        (selected_item["rowid"],)
+                    )
+                db.conn.commit()
+                clear_screen()
+                if result.get("heal"):
+                    typewrite(f"  restored {result['heal']} hp.", delay=0.02)
+                if result.get("bonus_crit"):
+                    typewrite(f"  crit +{result['bonus_crit']}.", delay=0.02)
+                if result.get("defense"):
+                    typewrite(f"  barrier +{result['defense']} (only active in combat).", delay=0.02)
+                input("\npress enter...")
+                return
+
+            elif weapon_data:
                 if is_equipped:
                     db.bonus_calc(db.BonusType.WEAPON, player_id=player_id, remove=True)
                     db.c.execute("UPDATE players SET equipped_weapon = NULL WHERE id = ?", (player_id,))
+                    db.conn.commit()
                 else:
+                    if equipped_weapon:
+                        db.c.execute("SELECT * FROM weapons WHERE name = ?", (equipped_weapon,))
+                        current_data = db.c.fetchone()
+                        clear_screen()
+                        print("  [ CURRENTLY EQUIPPED ]")
+                        print_item_stats(current_data, equipped_weapon)
+                        print()
+                        print("  [ REPLACING WITH ]")
+                        print_item_stats(weapon_data, item_name)
+                        print()
+                        print("  (1) yes, replace  (2) no, keep current")
+                        if input("> ").strip() != "1":
+                            return
+                        db.bonus_calc(db.BonusType.WEAPON, player_id=player_id, remove=True)
                     db.c.execute("UPDATE players SET equipped_weapon = ? WHERE id = ?", (item_name, player_id))
                     db.bonus_calc(db.BonusType.WEAPON, player_id=player_id)
-                db.conn.commit()
+                    db.conn.commit()
+                return
+
             elif armor_data:
                 if is_equipped:
                     db.bonus_calc(db.BonusType.ARMOR, player_id=player_id, remove=True)
                     db.c.execute("UPDATE players SET equipped_armor = NULL WHERE id = ?", (player_id,))
+                    db.conn.commit()
                 else:
+                    if equipped_armor:
+                        db.c.execute("SELECT * FROM armors WHERE name = ?", (equipped_armor,))
+                        current_data = db.c.fetchone()
+                        clear_screen()
+                        print("  [ CURRENTLY EQUIPPED ]")
+                        print_item_stats(current_data, equipped_armor)
+                        print()
+                        print("  [ REPLACING WITH ]")
+                        print_item_stats(armor_data, item_name)
+                        print()
+                        print("  (1) yes, replace  (2) no, keep current")
+                        if input("> ").strip() != "1":
+                            return
+                        db.bonus_calc(db.BonusType.ARMOR, player_id=player_id, remove=True)
                     db.c.execute("UPDATE players SET equipped_armor = ? WHERE id = ?", (item_name, player_id))
                     db.bonus_calc(db.BonusType.ARMOR, player_id=player_id)
-                db.conn.commit()
-            return  # back to inventory list
+                    db.conn.commit()
+                return
 
         elif action == "2":
-            # Confirm before deleting
             clear_screen()
             print(f"  throw away {item_name}?")
             print("  (1) yes, discard it")
@@ -973,7 +1495,7 @@ def _inspect_item(player_id, selected_item, items):
                 db.conn.commit()
                 typewrite(f"  {item_name} discarded.", delay=0.02)
                 input("\npress enter...")
-                return  # item gone, back to list
+                return
 
         elif action == "3":
             return
@@ -982,8 +1504,11 @@ def _inspect_item(player_id, selected_item, items):
 # ------------------------------------------------------------------ #
 #  ONE-TIME SETUP                                                      #
 # ------------------------------------------------------------------ #
-
 initialize_game()
+
+
+
+
 
 try:
     # ------------------------------------------------------------------ #
@@ -996,8 +1521,9 @@ try:
             clear_screen()
             print("(1) new game")
             print("(2) load game")
-            print("(3) reset database")
-            print("(4) quit")
+            print("(3) tutorial")
+            print("(4) reset database")
+            print("(5) quit")
             choice = input("> ")
 
             if choice == "1":
@@ -1013,11 +1539,14 @@ try:
                     play = True
 
             elif choice == "3":
+                run_tutorial()
+
+            elif choice == "4":
                 os.remove("game_data.db")
                 db.reconnect()
                 initialize_game()
-
-            elif choice == "4":
+            
+            elif choice == "5":
                 print("connection closed.")
                 quit()
 
@@ -1027,7 +1556,8 @@ try:
             print("(0) adventure")
             print("(1) inventory")
             print("(2) equipped items and stats")
-            print("(3) back to menu")
+            print("(3) speak to the Archivist")
+            print("(4) back to menu")
             choice = input("> ")
 
             if choice == "0":
@@ -1064,6 +1594,10 @@ try:
                 input("\npress enter to go back...")
 
             elif choice == "3":
+                events = load_events()
+                show_npc(player_id, events)
+
+            elif choice == "4":
                 play = False
                 menu = True
 
@@ -1080,9 +1614,9 @@ try:
             if seed_input.isdigit():
                 custom_seed = int(seed_input)
                 run_id, current_node_id, seed = db.init_run(player_id, custom_seed)
+                random.seed(custom_seed)
             else:
                 run_id, current_node_id, seed = db.init_run(player_id)
-
             clear_screen()
             typewrite("querying the world index...", delay=0.01)
             typewrite(f"seed: {seed}", delay=0.005)
@@ -1101,6 +1635,7 @@ try:
                 3:  "DEADLOCK",
                 4:  "CONSTRAINT",
                 5:  "OVERFLOW",
+                6:  "REST",
             }
 
             run_lost     = False
@@ -1113,6 +1648,10 @@ try:
 
                 print(f"[ {node['name']} ] — {ENCOUNTER_NAME.get(enc_type, '???')}")
                 print(node["description"] or "")
+                flavour = db.get_node_flavour(enc_type)
+                if flavour:
+                    print()
+                    typewrite(f"  {flavour}", delay=0.02)
                 print()
 
                 # Reload events before every node
@@ -1125,15 +1664,16 @@ try:
 
                 elif enc_type == 0:
                     db.register_shop_visit(player_id, node["id"])
-                    run_shop(player_id, node["name"], events)
+                    run_shop(player_id, node["name"], events, path_id=node["id"], run_seed=seed)
 
                 elif enc_type in (1,):
                     # QUERY — standard combat
                     enemy_id = db.generate_enemy(player_id)
                     db.apply_event_combat_modifiers(enemy_id, events)
-                    result, _ = run_combat(player_id, enemy_id, events)
+                    result, _ = run_combat(player_id, enemy_id, events, run_id=run_id)
 
                     if result == "lose":
+                        db.finish_run(run_id, "lose")
                         run_lost    = True
                         path_running = False
                         adventuring  = False
@@ -1149,8 +1689,9 @@ try:
 
                 elif enc_type in (2, 3):
                     # STORED_PROCEDURE / DEADLOCK — dungeon crawl
-                    cleared = run_dungeon(player_id, node["name"], enc_type, events)
+                    cleared = run_dungeon(player_id, node["name"], enc_type, events, run_id=run_id)
                     if not cleared:
+                        db.finish_run(run_id, "lose")
                         run_lost    = True
                         path_running = False
                         adventuring  = False
@@ -1165,9 +1706,10 @@ try:
                         input("\npress enter...")
                     else:
                         result_combat, events = run_constraint_encounter(
-                            player_id, node["name"], events
+                            player_id, node["name"], events, run_id=run_id
                         )
                         if result_combat == "lose":
+                            db.finish_run(run_id, "lose")
                             run_lost    = True
                             path_running = False
                             adventuring  = False
@@ -1181,9 +1723,10 @@ try:
                     print()
                     enemy_id = db.generate_enemy(player_id, is_boss=True)
                     db.apply_event_combat_modifiers(enemy_id, events)
-                    result, _ = run_combat(player_id, enemy_id, events)
+                    result, _ = run_combat(player_id, enemy_id, events, run_id=run_id)
 
                     if result == "lose":
+                        db.finish_run(run_id, "lose")
                         run_lost    = True
                         path_running = False
                         adventuring  = False
@@ -1201,8 +1744,20 @@ try:
                             typewrite(f"  {item_type.upper()}: {item_name}", delay=0.02)
                         input("\npress enter...")
 
+                    # Check for ending
+                    overflow_kills = db.record_overflow_kill(player_id)
+                    if overflow_kills >= db.OVERFLOW_BOSSES_TOTAL:
+                        show_ending(player_id)
+                        path_running = False
+                        adventuring  = False
+                        play         = True
+                        break
+                elif enc_type == 6:
+                    run_rest(player_id, node["name"])
+
                 # Mark node finished
                 db.finish_node(node["id"])
+                db.record_run_node(run_id)
 
                 # ---- Get next choices ---- #
                 children = db.get_path_children(node["id"])
@@ -1210,6 +1765,7 @@ try:
                 if not children:
                     clear_screen()
                     typewrite("run complete. returning to camp...", delay=0.03)
+                    db.finish_run(run_id, "win")
                     apply_solar_eclipse(player_id, events, remove=True)
                     input("\npress enter...")
                     path_running = False
@@ -1238,8 +1794,7 @@ try:
                 print()
                 if shops:
                     print("  [ return to a shop ]")
-                    for j, shop in enumerate(shops, shop_offset + 1):
-                        print(f"         ({j}) {shop['name']}")
+                    print(f"         ({shop_offset + 1}) {shops[0]['name']}")
                     print()
 
                 print("  (0) flee — return to camp")
@@ -1251,6 +1806,7 @@ try:
                     continue
 
                 if choice == 0:
+                    db.finish_run(run_id, "fled")
                     apply_solar_eclipse(player_id, events, remove=True)
                     path_running = False
                     adventuring  = False
@@ -1268,7 +1824,16 @@ try:
 
             if run_lost:
                 clear_screen()
+                stats = db.get_run_stats(run_id)
                 typewrite("  you have fallen. the run is over.", delay=0.03)
+                print()
+                print("  ══════════════════════════════")
+                print("  [ RUN RECAP ]")
+                print(f"  seed:          {stats['seed']}")
+                print(f"  kills:         {stats['kills']}")
+                print(f"  bytes earned:   {stats['bytes_earned']}")
+                print(f"  nodes cleared: {stats['nodes_cleared']}")
+                print("  ══════════════════════════════")
                 apply_solar_eclipse(player_id, events, remove=True)
                 input("\npress enter...")
 

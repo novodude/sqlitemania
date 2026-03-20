@@ -39,7 +39,16 @@ def init_db():
             name TEXT UNIQUE NOT NULL,
             base_hp INTEGER NOT NULL,
             base_hit INTEGER NOT NULL,
-            base_wisdom INTEGER NOT NULL
+            base_crit INTEGER NOT NULL
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS status_effects (
+            player_id  INTEGER NOT NULL,
+            effect     TEXT NOT NULL,   -- 'DEADLOCK' | 'CORRUPTION' | 'SEGFAULT'
+            duration   INTEGER NOT NULL,
+            FOREIGN KEY (player_id) REFERENCES players(id)
         )
     """)
 
@@ -66,11 +75,11 @@ def init_db():
             bonus_hp INTEGER DEFAULT 0,
             max_hp INTEGER NOT NULL,
             current_hp INTEGER NOT NULL,
-            gold INTEGER DEFAULT 50,
+            bytes INTEGER DEFAULT 50,
             base_hit INTEGER NOT NULL,
             bonus_hit INTEGER DEFAULT 0,
-            base_wisdom INTEGER NOT NULL,
-            bonus_wisdom INTEGER DEFAULT 0,
+            base_crit INTEGER NOT NULL,
+            bonus_crit INTEGER DEFAULT 0,
             FOREIGN KEY (player_id) REFERENCES players(id)
         )
     """)
@@ -91,10 +100,25 @@ def init_db():
             potion_type TEXT NOT NULL,
             heal_amount INTEGER DEFAULT 0,
             bonus_hit   INTEGER DEFAULT 0,
-            bonus_wisdom INTEGER DEFAULT 0,
+            bonus_crit INTEGER DEFAULT 0,
             defense_flat INTEGER DEFAULT 0,
             duration    INTEGER DEFAULT 1,
             price       INTEGER DEFAULT 15
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS node_flavour (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            encounter_type INTEGER NOT NULL,
+            line           TEXT NOT NULL
         )
     """)
 
@@ -119,7 +143,7 @@ def init_db():
             hit_mult INTEGER NOT NULL,
             bonus_hp INTEGER DEFAULT 0,
             bonus_hit INTEGER DEFAULT 0,
-            bonus_wisdom INTEGER DEFAULT 0,
+            bonus_crit INTEGER DEFAULT 0,
             found BOOLEAN DEFAULT 0
         )
     """)
@@ -132,7 +156,7 @@ def init_db():
             hit_mult INTEGER NOT NULL,
             bonus_hp INTEGER DEFAULT 0,
             bonus_hit INTEGER DEFAULT 0,
-            bonus_wisdom INTEGER DEFAULT 0,
+            bonus_crit INTEGER DEFAULT 0,
             found BOOLEAN DEFAULT 0
         )
     """)
@@ -148,7 +172,7 @@ def init_db():
             hit_mult INTEGER DEFAULT 20,
             bonus_hp INTEGER DEFAULT 0,
             bonus_hit INTEGER DEFAULT 0,
-            bonus_wisdom INTEGER DEFAULT 0,
+            bonus_crit INTEGER DEFAULT 0,
             claimed BOOLEAN DEFAULT 0
         )
     """)
@@ -168,6 +192,11 @@ def init_db():
             player_id   INTEGER NOT NULL,
             seed        INTEGER NOT NULL,
             level_range INTEGER NOT NULL,
+            kills       INTEGER DEFAULT 0,
+            bytes_earned INTEGER DEFAULT 0,
+            nodes_cleared INTEGER DEFAULT 0,
+            outcome     TEXT,                  -- 'win' | 'lose' | 'fled'
+            ended_at    TIMESTAMP,
             created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (player_id) REFERENCES players(id)
         )
@@ -199,6 +228,33 @@ def init_db():
         )
     """)
 
+    # Persists the exact stock a shop was rolled with, so revisits show the same items
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS shop_stock (
+            path_id    INTEGER NOT NULL,
+            slot       INTEGER NOT NULL,       -- ordering index
+            item_type  TEXT    NOT NULL,       -- 'weapon', 'armor', 'potion'
+            item_name  TEXT    NOT NULL,
+            PRIMARY KEY (path_id, slot),
+            FOREIGN KEY (path_id) REFERENCES path(id)
+        )
+    """)
+
+    try:
+        c.execute("ALTER TABLE runs RENAME COLUMN bytes_earned TO bytes_earned")
+    except sql.OperationalError:
+        pass
+
+    try:
+        c.execute("ALTER TABLE player_stats RENAME COLUMN bytes TO bytes")
+    except sql.OperationalError:
+        pass
+
+    try:
+        c.execute("ALTER TABLE players ADD COLUMN overflow_kills INTEGER DEFAULT 0")
+    except sql.OperationalError:
+        pass
+
     try:
         c.execute("ALTER TABLE players ADD COLUMN current_run_id  INTEGER REFERENCES runs(id)")
     except sql.OperationalError:
@@ -207,6 +263,13 @@ def init_db():
         c.execute("ALTER TABLE players ADD COLUMN current_path_id INTEGER REFERENCES path(id)")
     except sql.OperationalError:
         pass
+    # Migrate existing runs tables that predate the stat columns
+    for col, default in [("kills", "0"), ("bytes_earned", "0"), ("nodes_cleared", "0"),
+                         ("outcome", "NULL"), ("ended_at", "NULL")]:
+        try:
+            c.execute(f"ALTER TABLE runs ADD COLUMN {col} {'TEXT' if col in ('outcome','ended_at') else 'INTEGER DEFAULT 0'}")
+        except sql.OperationalError:
+            pass
 
     c.execute("""
     CREATE TABLE IF NOT EXISTS map(
@@ -222,6 +285,15 @@ def init_db():
     c.execute("SELECT COUNT(*) FROM events")
     if c.fetchone()[0] == 0:
         c.execute("INSERT INTO events DEFAULT VALUES")
+
+    try:
+        c.execute("ALTER TABLE weapons ADD COLUMN element TEXT DEFAULT 'QUERY'")
+    except sql.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE armors ADD COLUMN element TEXT DEFAULT 'QUERY'")
+    except sql.OperationalError:
+        pass
 
     conn.commit()
     _init_boss_loot()
@@ -249,7 +321,7 @@ def _init_boss_loot():
 
     c.executemany("""
         INSERT INTO boss_loot (boss_name, item_name, item_type, class_type,
-                               hit_mult, bonus_hp, bonus_hit, bonus_wisdom)
+                               hit_mult, bonus_hp, bonus_hit, bonus_crit)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, loot)
     conn.commit()
@@ -264,7 +336,7 @@ def drop_boss_loot(player_id: int, boss_type: str):
 
     c.execute("""
         SELECT id, item_name, item_type, class_type, hit_mult,
-               bonus_hp, bonus_hit, bonus_wisdom
+               bonus_hp, bonus_hit, bonus_crit
         FROM boss_loot
         WHERE boss_name = ? AND claimed = 0
     """, (boss_name,))
@@ -276,17 +348,17 @@ def drop_boss_loot(player_id: int, boss_type: str):
         if row["item_type"] == "weapon":
             c.execute("""
                 INSERT OR IGNORE INTO weapons
-                    (name, class_type, hit_mult, bonus_hp, bonus_hit, bonus_wisdom, found)
+                    (name, class_type, hit_mult, bonus_hp, bonus_hit, bonus_crit, found)
                 VALUES (?, ?, ?, ?, ?, ?, 1)
             """, (row["item_name"], row["class_type"], row["hit_mult"],
-                  row["bonus_hp"], row["bonus_hit"], row["bonus_wisdom"]))
+                  row["bonus_hp"], row["bonus_hit"], row["bonus_crit"]))
         else:
             c.execute("""
                 INSERT OR IGNORE INTO armors
-                    (name, class_type, hit_mult, bonus_hp, bonus_hit, bonus_wisdom, found)
+                    (name, class_type, hit_mult, bonus_hp, bonus_hit, bonus_crit, found)
                 VALUES (?, ?, ?, ?, ?, ?, 1)
             """, (row["item_name"], row["class_type"], row["hit_mult"],
-                  row["bonus_hp"], row["bonus_hit"], row["bonus_wisdom"]))
+                  row["bonus_hp"], row["bonus_hit"], row["bonus_crit"]))
 
         add_item(player_id, row["item_name"], 1)
         c.execute("UPDATE boss_loot SET claimed = 1 WHERE id = ?", (row["id"],))
@@ -303,25 +375,63 @@ def init_classes():
         ("The Trigger",  90, 12, 10),
     ]
     c.executemany("""
-        INSERT OR IGNORE INTO class (name, base_hp, base_hit, base_wisdom)
+        INSERT OR IGNORE INTO class (name, base_hp, base_hit, base_crit)
         VALUES (?, ?, ?, ?)
     """, classes)
     conn.commit()
 
 
+def generate_gear(player_level: int, gear_type: str = "random"):
+    """Generate a single weapon or armor scaled to player_level."""
+    if gear_type == "random":
+        gear_type = random.choice(["weapon", "armor"])
+
+    level_bonus = player_level - 1  # scales linearly with level
+
+    with open("weapon_name.json" if gear_type == "weapon" else "armor_name.json", "r") as f:
+        data = json.load(f)
+
+    if gear_type == "weapon":
+        name = f"{random.choice(data['first_name'])} {random.choice(data['second_name'])}"
+    else:
+        name = random.choice(data)
+
+    class_type = random.choice(["The Executor", "The Trigger", "The Indexer"])
+
+    if class_type == "The Executor":
+        bonus_hp    = random.randint(300, 500)  + level_bonus * 20
+        bonus_hit   = random.randint(20,  60)   + level_bonus * 3
+        bonus_crit  = random.randint(0,   10)   + level_bonus
+        hit_mult    = random.randint(1,   30)
+    elif class_type == "The Trigger":
+        bonus_hp    = random.randint(100, 250)  + level_bonus * 12
+        bonus_hit   = random.randint(30,  50)   + level_bonus * 4
+        bonus_crit  = random.randint(20,  30)   + level_bonus * 2
+        hit_mult    = random.randint(1,   30)
+    else:  # The Indexer
+        bonus_hp    = random.randint(20,  100)  + level_bonus * 5
+        bonus_hit   = random.randint(5,   20)   + level_bonus * 2
+        bonus_crit  = random.randint(30,  60)   + level_bonus * 4
+        hit_mult    = random.randint(1,   30)
+
+    table = "weapons" if gear_type == "weapon" else "armors"
+    element = random.choice(["QUERY", "LOCK", "OVERFLOW", "NULL"])
+    c.execute(f"""
+        INSERT INTO {table} (name, class_type, hit_mult, bonus_hp, bonus_hit, bonus_crit, element, found)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+    """, (name, class_type, hit_mult, bonus_hp, bonus_hit, bonus_crit, element))
+    conn.commit()
+    return c.lastrowid, name, gear_type
+
 def loot_init():
     c.execute("SELECT COUNT(*) FROM weapons")
-    count = c.fetchone()[0]
-    if count < 100:
-        for _ in range(100 - count):
-            init_weapon()
-
+    if c.fetchone()[0] == 0:
+        for _ in range(20):
+            generate_gear(player_level=1, gear_type="weapon")
     c.execute("SELECT COUNT(*) FROM armors")
-    count = c.fetchone()[0]
-    if count < 100:
-        for _ in range(100 - count):
-            init_armor()
-
+    if c.fetchone()[0] == 0:
+        for _ in range(20):
+            generate_gear(player_level=1, gear_type="armor")
 
 def add_item(player_id: int, item: str, amount: int = 1):
     c.execute("""
@@ -377,68 +487,19 @@ def starter_armor(player_id: int):
     add_item(player_id, chosen[1], 1)
 
 
-def init_weapon():
-    with open("weapon_name.json", "r") as w:
-        data = json.load(w)
-
-    name = f"{random.choice(data['first_name'])} {random.choice(data['second_name'])}"
-    class_type = random.choice(["The Executor", "The Trigger", "The Indexer"])
-
-    if class_type == "The Executor":
-        hit_mult = random.randint(1, 30); bonus_hp = random.randint(300, 500)
-        bonus_hit = random.randint(20, 60); bonus_wisdom = random.randint(0, 10)
-    elif class_type == "The Trigger":
-        hit_mult = random.randint(1, 30); bonus_hp = random.randint(100, 250)
-        bonus_hit = random.randint(30, 50); bonus_wisdom = random.randint(25, 25)
-    else:
-        hit_mult = random.randint(1, 30); bonus_hp = random.randint(20, 100)
-        bonus_hit = random.randint(5, 20); bonus_wisdom = random.randint(30, 60)
-
-    c.execute("""
-        INSERT INTO weapons (name, class_type, hit_mult, bonus_hp, bonus_hit, bonus_wisdom)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (name, class_type, hit_mult, bonus_hp, bonus_hit, bonus_wisdom))
-    conn.commit()
-    return name
-
-
-def init_armor():
-    with open("armor_name.json", "r") as w:
-        data = json.load(w)
-
-    name = random.choice(data)
-    class_type = random.choice(["The Executor", "The Trigger", "The Indexer"])
-
-    if class_type == "The Executor":
-        hit_mult = random.randint(1, 30); bonus_hp = random.randint(300, 500)
-        bonus_hit = random.randint(20, 60); bonus_wisdom = 0
-    elif class_type == "The Trigger":
-        hit_mult = random.randint(1, 30); bonus_hp = random.randint(100, 250)
-        bonus_hit = random.randint(30, 50); bonus_wisdom = random.randint(25, 25)
-    else:
-        hit_mult = random.randint(1, 30); bonus_hp = 10
-        bonus_hit = random.randint(5, 20); bonus_wisdom = random.randint(30, 60)
-
-    c.execute("""
-        INSERT INTO armors (name, class_type, hit_mult, bonus_hp, bonus_hit, bonus_wisdom)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (name, class_type, hit_mult, bonus_hp, bonus_hit, bonus_wisdom))
-    conn.commit()
-    return name
-
-
 def init_map():
     DISTRIBUTION = {
-        0: 5, 1: 30, 2: 5, 3: 5, 4: 3, 5: 2
+        0: 5, 1: 30, 2: 5, 3: 5, 4: 3, 5: 2, 6: 4
     }
-    LOW_ADJ  = ["Quiet", "Small", "Dusty", "Worn", "Faded"]
-    MID_ADJ  = ["Savage", "Shadowed", "Ancient", "Ruthless", "Cursed"]
-    HIGH_ADJ = ["Mythic", "Abyssal", "Cataclysmic", "Eternal", "Godslayer"]
-    CREATURES    = ["Goblins", "Bandits", "Wolves", "Skeletons", "Cultists", "Knights"]
+    LOW_ADJ  = ["Cached", "Indexed", "Idle", "Dormant", "Deprecated"]
+    MID_ADJ  = ["Corrupted", "Fragmented", "Recursive", "Locked", "Overloaded"]
+    HIGH_ADJ = ["Null", "Truncated", "Cascading", "Unhandled", "Catastrophic"]
+    CREATURES    = ["Processes", "Daemons", "Threads", "Queries", "Triggers", "Cursors"]
     BOSSES       = ["Warlord", "Overseer", "Tyrant", "Behemoth", "Archmage"]
-    PLACES       = ["Ruins", "Sanctum", "Fortress", "Temple", "Stronghold"]
-    CAVE_TYPES   = ["Crystal Cavern", "Molten Depths", "Frozen Hollow", "Echoing Cave"]
-    FOREST_TYPES = ["Whispering Woods", "Twilight Grove", "Rotwood Forest", "Bloodleaf Wilds"]
+    PLACES       = ["Schema", "Warehouse", "Cluster", "Replica", "Shard"]
+    CAVE_TYPES   = ["Deadlock Chamber", "Rollback Depths", "Isolation Vault", "Constraint Hollow"]
+    FOREST_TYPES = ["Cascade Wilds", "Foreign Key Tangle", "Trigger Thicket", "Index Sprawl"]
+    REST_TYPES   = ["Checkpoint Node", "Savepoint Alcove", "Commit Cache", "Buffer Clearing"]
 
     def get_adjectives(lr):
         if lr <= 2: return LOW_ADJ
@@ -453,6 +514,7 @@ def init_map():
         if et == 3: return f"{adj} {random.choice(CAVE_TYPES)}"
         if et == 4: return f"{adj} {random.choice(FOREST_TYPES)}"
         if et == 5: return f"{adj} {random.choice(BOSSES)}"
+        if et == 6: return f"{adj} {random.choice(REST_TYPES)}"
 
     def generate_description(et, lr):
         mn, mx = lr * 10 + 1, (lr + 1) * 10
@@ -462,6 +524,7 @@ def init_map():
         if et == 3: return f"A DEADLOCK node. A dark cave where two forces collide around level {mn}-{mx}."
         if et == 4: return f"A CONSTRAINT node. A forest where the world pushes back, level {mn}-{mx}."
         if et == 5: return f"An OVERFLOW node. A boss encounter for heroes level {mn}-{mx}."
+        if et == 6: return f"A REST node. A quiet place to recover, level {mn}-{mx}."
 
     rows = []
     for level_range in range(10):
@@ -481,23 +544,58 @@ def init_map():
 
 
 def init_run(player_id: int, custom_seed: int = None):
+    import time
+    seed = custom_seed if custom_seed is not None else int(time.time() * 1000) % (2**31)
+
     c.execute("SELECT level FROM players WHERE id = ?", (player_id,))
     player_level = c.fetchone()[0]
     level_range = min((player_level - 1) // 10, 9)
 
-    seed = custom_seed if custom_seed is not None else random.randint(0, 999_999)
     c.execute("""
         INSERT INTO runs (player_id, seed, level_range) VALUES (?, ?, ?)
     """, (player_id, seed, level_range))
     run_id = c.lastrowid
+    conn.commit()
+
+    c.execute("UPDATE players SET current_run_id = ? WHERE id = ?", (run_id, player_id))
+    conn.commit()
 
     root_id = generate_path(run_id, level_range, seed)
+    recommended_min = level_range * 10 + 1
 
-    c.execute("""
-        UPDATE players SET current_run_id = ?, current_path_id = ? WHERE id = ?
-    """, (run_id, root_id, player_id))
-    conn.commit()
+    if player_level < recommended_min:
+        print(f"  WARNING: this run is tuned for level {recommended_min}+.")
+        print(f"  you are level {player_level}. proceed with caution.")
+        print()
     return run_id, root_id, seed
+
+
+def record_run_kill(run_id: int):
+    c.execute("UPDATE runs SET kills = kills + 1 WHERE id = ?", (run_id,))
+    conn.commit()
+
+
+def record_run_bytes(run_id: int, amount: int):
+    c.execute("UPDATE runs SET bytes_earned = bytes_earned + ? WHERE id = ?", (amount, run_id))
+    conn.commit()
+
+
+def record_run_node(run_id: int):
+    c.execute("UPDATE runs SET nodes_cleared = nodes_cleared + 1 WHERE id = ?", (run_id,))
+    conn.commit()
+
+
+def finish_run(run_id: int, outcome: str):
+    """outcome: 'win' | 'lose' | 'fled'"""
+    c.execute("""
+        UPDATE runs SET outcome = ?, ended_at = CURRENT_TIMESTAMP WHERE id = ?
+    """, (outcome, run_id))
+    conn.commit()
+
+
+def get_run_stats(run_id: int):
+    c.execute("SELECT * FROM runs WHERE id = ?", (run_id,))
+    return c.fetchone()
 
 
 def generate_path(run_id: int, level_range: int, seed: int):
@@ -507,69 +605,60 @@ def generate_path(run_id: int, level_range: int, seed: int):
         SELECT name, description, encounter_type FROM map
         WHERE level_range = ? AND encounter_type != 5
     """, (level_range,))
-    pool = c.fetchall()
+    pool = c.fetchall() or [("Unknown Path", "A mysterious encounter.", 1)]
 
     c.execute("""
         SELECT name, description, encounter_type FROM map
         WHERE level_range = ? AND encounter_type = 5
     """, (level_range,))
-    boss_pool = c.fetchall()
+    boss_pool = c.fetchall() or [("Ancient Overflow", "An OVERFLOW node. A boss encounter.", 5)]
 
-    if not pool:
-        pool = [("Unknown Path", "A mysterious encounter.", 1)]
-    if not boss_pool:
-        boss_pool = [("Ancient Overflow", "An OVERFLOW node. A boss encounter.", 5)]
-
-    WEIGHTS = {0: 1, 1: 6, 2: 2, 3: 2, 4: 1}
+    WEIGHTS = {0: 1, 1: 6, 2: 2, 3: 2, 4: 1, 5: 0, 6: 3}
 
     def weighted_pick(exclude_types=()):
         candidates = [r for r in pool if r["encounter_type"] not in exclude_types]
-        if not candidates:
-            candidates = pool
-        weights = [WEIGHTS.get(r["encounter_type"], 1) for r in candidates]
-        return rng.choices(candidates, weights=weights, k=1)[0]
+        weights = [WEIGHTS.get(r["encounter_type"], 1) for r in (candidates or pool)]
+        return rng.choices(candidates or pool, weights=weights, k=1)[0]
 
     def insert_node(parent_id, depth, branch, row, is_boss=False):
         enc_type = 5 if is_boss else row["encounter_type"]
         c.execute("""
-            INSERT INTO path (run_id, parent_id, depth, branch, name, description, encounter_type, level_range)
+            INSERT INTO path
+                (run_id, parent_id, depth, branch, name, description, encounter_type, level_range)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (run_id, parent_id, depth, branch, row["name"], row["description"], enc_type, level_range))
         return c.lastrowid
 
+    # ROOT
     c.execute("""
         INSERT INTO path (run_id, parent_id, depth, branch, name, description, encounter_type, level_range)
         VALUES (?, NULL, 0, 1, 'START', 'The journey begins here.', -1, ?)
     """, (run_id, level_range))
     root_id = c.lastrowid
 
-    depth1_count = rng.randint(2, 3)
-    branches_1 = rng.sample([0, 1, 2], depth1_count)
+    # DEPTH 1 — always includes one shop, rest are random
+    shop_candidates = [r for r in pool if r["encounter_type"] == 0]
+    depth1_branches = sorted(rng.sample([0, 1, 2], rng.randint(2, 3)))
     depth1_ids = []
-    for branch in sorted(branches_1):
-        if branch == branches_1[0]:
-            candidates = [r for r in pool if r["encounter_type"] == 0]
-            row = rng.choice(candidates) if candidates else weighted_pick()
-        else:
-            row = weighted_pick(exclude_types=(5,))
-        node_id = insert_node(root_id, 1, branch, row)
-        depth1_ids.append((node_id, branch))
+    for i, branch in enumerate(depth1_branches):
+        row = rng.choice(shop_candidates or pool) if i == 0 else weighted_pick(exclude_types=(5,))
+        depth1_ids.append((insert_node(root_id, 1, branch, row), branch))
 
-    prev_depth_ids = depth1_ids
-    for depth in range(2, 4):
-        next_depth_ids = []
-        for parent_id, _ in prev_depth_ids:
-            child_count = rng.randint(1, 3)
-            branches = rng.sample([0, 1, 2], child_count)
-            for branch in sorted(branches):
+    # DEPTHS 2–3 — each parent spawns 1-3 children
+    MIDDLE_DEPTHS = [2, 3]
+    prev_ids = depth1_ids
+    for depth in MIDDLE_DEPTHS:
+        next_ids = []
+        for parent_id, _ in prev_ids:
+            branches = sorted(rng.sample([0, 1, 2], rng.randint(1, 3)))
+            for branch in branches:
                 row = weighted_pick(exclude_types=(5,))
-                node_id = insert_node(parent_id, depth, branch, row)
-                next_depth_ids.append((node_id, branch))
-        prev_depth_ids = next_depth_ids
+                next_ids.append((insert_node(parent_id, depth, branch, row), branch))
+        prev_ids = next_ids
 
-    for parent_id, _ in prev_depth_ids:
-        row = rng.choice(boss_pool)
-        insert_node(parent_id, 4, 1, row, is_boss=True)
+    # DEPTH 4 — boss node for every leaf
+    for parent_id, _ in prev_ids:
+        insert_node(parent_id, 4, 1, rng.choice(boss_pool), is_boss=True)
 
     conn.commit()
     return root_id
@@ -602,10 +691,38 @@ def register_shop_visit(player_id: int, path_id: int):
         SELECT 1 FROM visited_shops WHERE player_id = ? AND path_id = ?
     """, (player_id, path_id))
     if not c.fetchone():
+        c.execute("DELETE FROM visited_shops")
         c.execute("""
             INSERT INTO visited_shops (player_id, path_id) VALUES (?, ?)
         """, (player_id, path_id))
         conn.commit()
+
+
+def save_shop_stock(path_id: int, stock: list):
+    """Persist a shop's rolled stock so revisits see the same items.
+
+    stock is a list of (item_type, item_name) tuples where item_type is
+    'weapon', 'armor', or 'potion'.
+    """
+    c.execute("SELECT COUNT(*) FROM shop_stock WHERE path_id = ?", (path_id,))
+    if c.fetchone()[0] > 0:
+        return  # already saved, don't overwrite
+    rows = [(path_id, i, t, n) for i, (t, n) in enumerate(stock)]
+    c.executemany("""
+        INSERT OR IGNORE INTO shop_stock (path_id, slot, item_type, item_name)
+        VALUES (?, ?, ?, ?)
+    """, rows)
+    conn.commit()
+
+
+def load_shop_stock(path_id: int):
+    """Return saved stock for a shop, or None if never saved."""
+    c.execute("""
+        SELECT item_type, item_name FROM shop_stock
+        WHERE path_id = ? ORDER BY slot ASC
+    """, (path_id,))
+    rows = c.fetchall()
+    return rows if rows else None
 
 
 def get_visited_shops(player_id: int):
@@ -619,25 +736,49 @@ def get_visited_shops(player_id: int):
 
 def init_player(username: str, class_name: str):
     c.execute("""
-        SELECT id, base_hp, base_hit, base_wisdom FROM class WHERE name = ?
+        SELECT id, base_hp, base_hit, base_crit FROM class WHERE name = ?
     """, (class_name,))
     class_data = c.fetchone()
     if not class_data:
         raise ValueError(f"Class '{class_name}' does not exist")
 
-    class_id, hp, hit, wisdom = class_data
+    class_id, hp, hit, crit = class_data
     c.execute("""
         INSERT INTO players (username, class_id) VALUES (?, ?)
     """, (username, class_id))
     player_id = c.lastrowid
 
     c.execute("""
-        INSERT INTO player_stats (player_id, base_hp, max_hp, current_hp, base_hit, base_wisdom)
+        INSERT INTO player_stats (player_id, base_hp, max_hp, current_hp, base_hit, base_crit)
         VALUES (?, ?, ?, ?, ?, ?)
-    """, (player_id, hp, hp, hp, hit, wisdom))
+    """, (player_id, hp, hp, hp, hit, crit))
 
     starter_weapon(player_id)
     starter_armor(player_id)
+
+    # Auto-equip starter gear
+    c.execute("SELECT item FROM inventory WHERE player_id = ? LIMIT 1 OFFSET 0", (player_id,))
+    w = c.fetchone()
+    c.execute("SELECT item FROM inventory WHERE player_id = ? LIMIT 1 OFFSET 1", (player_id,))
+    a = c.fetchone()
+
+    if w:
+        c.execute("UPDATE players SET equipped_weapon = ? WHERE id = ?", (w["item"], player_id))
+    if a:
+        c.execute("UPDATE players SET equipped_armor = ? WHERE id = ?", (a["item"], player_id))
+
+    conn.commit()
+
+    # Apply gear bonuses so max_hp and stats reflect equipped items
+    if w:
+        bonus_calc(BonusType.WEAPON, player_id)
+    if a:
+        bonus_calc(BonusType.ARMOR, player_id)
+
+    # Set current_hp to full after bonuses are applied
+    c.execute("""
+        UPDATE player_stats SET current_hp = max_hp WHERE player_id = ?
+    """, (player_id,))
     conn.commit()
     return player_id
 
@@ -662,13 +803,13 @@ def bonus_calc(bonus_type: BonusType, player_id: int, remove: bool = False):
         hit_mult     = weapon_data["hit_mult"]
         bonus_hp     = weapon_data["bonus_hp"]     * multiplier
         bonus_hit    = weapon_data["bonus_hit"]    * multiplier
-        bonus_wisdom = weapon_data["bonus_wisdom"] * multiplier
+        bonus_crit = weapon_data["bonus_crit"] * multiplier
 
         if weapon_data["class_type"] == user_class_type:
             if user_class_type == "The Executor":
                 bonus_hp *= 2
             elif user_class_type == "The Indexer":
-                bonus_wisdom *= 2
+                bonus_crit *= 2
             elif user_class_type == "The Trigger":
                 bonus_hit = bonus_hit * 2 + (20 * multiplier)
 
@@ -679,9 +820,9 @@ def bonus_calc(bonus_type: BonusType, player_id: int, remove: bool = False):
 
         c.execute("""
             UPDATE player_stats
-            SET bonus_hp = bonus_hp + ?, bonus_hit = bonus_hit + ?, bonus_wisdom = bonus_wisdom + ?
+            SET bonus_hp = bonus_hp + ?, bonus_hit = bonus_hit + ?, bonus_crit = bonus_crit + ?
             WHERE player_id = ?
-        """, (bonus_hp, bonus_hit, bonus_wisdom, player_id))
+        """, (bonus_hp, bonus_hit, bonus_crit, player_id))
         c.execute("UPDATE player_stats SET max_hp = base_hp + bonus_hp WHERE player_id = ?", (player_id,))
 
     elif bonus_type is BonusType.ARMOR:
@@ -697,13 +838,13 @@ def bonus_calc(bonus_type: BonusType, player_id: int, remove: bool = False):
         hit_mult     = armor_data["hit_mult"]
         bonus_hp     = armor_data["bonus_hp"]     * multiplier
         bonus_hit    = armor_data["bonus_hit"]    * multiplier
-        bonus_wisdom = armor_data["bonus_wisdom"] * multiplier
+        bonus_crit = armor_data["bonus_crit"] * multiplier
 
         if armor_data["class_type"] == user_class_type:
             if user_class_type == "The Executor":
                 bonus_hp *= 2
             elif user_class_type == "The Indexer":
-                bonus_wisdom *= 2
+                bonus_crit *= 2
             elif user_class_type == "The Trigger":
                 bonus_hit = bonus_hit * 2 + (20 * multiplier)
 
@@ -714,34 +855,51 @@ def bonus_calc(bonus_type: BonusType, player_id: int, remove: bool = False):
 
         c.execute("""
             UPDATE player_stats
-            SET bonus_hp = bonus_hp + ?, bonus_hit = bonus_hit + ?, bonus_wisdom = bonus_wisdom + ?
+            SET bonus_hp = bonus_hp + ?, bonus_hit = bonus_hit + ?, bonus_crit = bonus_crit + ?
             WHERE player_id = ?
-        """, (bonus_hp, bonus_hit, bonus_wisdom, player_id))
+        """, (bonus_hp, bonus_hit, bonus_crit, player_id))
         c.execute("UPDATE player_stats SET max_hp = base_hp + bonus_hp WHERE player_id = ?", (player_id,))
 
     conn.commit()
 
+ENEMY_ELEMENT = {
+    "Corrupted Index": "LOCK",
+    "Null Pointer":    "NULL",
+    "Stack Overflow":  "OVERFLOW",
+    "Deadlock Wraith": "LOCK",
+    "Zombie Process":  "NULL",
+}
+
+ELEMENT_WEAKNESS = {
+    "QUERY":    "LOCK",      # QUERY beats LOCK
+    "LOCK":     "OVERFLOW",  # LOCK beats OVERFLOW
+    "OVERFLOW": "NULL",      # OVERFLOW beats NULL
+    "NULL":     "QUERY",     # NULL beats QUERY
+}
+
+
 
 def get_potion_pool():
     return [
-        ("Minor Restore",        "RESTORE",         30,   0,   0,   0,   1,   10),
-        ("Restore",              "RESTORE",         60,   0,   0,   0,   1,   20),
-        ("Major Restore",        "RESTORE",         120,  0,   0,   0,   1,   40),
-        ("Minor Surge",          "SURGE",           0,    8,   0,   0,   3,   15),
-        ("Surge",                "SURGE",           0,    18,  0,   0,   3,   30),
-        ("Major Surge",          "SURGE",           0,    35,  0,   0,   5,   55),
-        ("Minor Clarity",        "CLARITY",         0,    0,   8,   0,   3,   15),
-        ("Clarity",              "CLARITY",         0,    0,   18,  0,   3,   30),
-        ("Major Clarity",        "CLARITY",         0,    0,   35,  0,   5,   55),
-        ("Minor Barrier",        "BARRIER",         0,    0,   0,   10,  3,   15),
-        ("Barrier",              "BARRIER",         0,    0,   0,   22,  3,   30),
-        ("Major Barrier",        "BARRIER",         0,    0,   0,   45,  5,   55),
-        ("Mending Surge",        "RESTORE_SURGE",   40,   12,  0,   0,   3,   35),
-        ("Vital Surge",          "RESTORE_SURGE",   80,   25,  0,   0,   3,   65),
-        ("Mending Clarity",      "RESTORE_CLARITY", 40,   0,   12,  0,   3,   35),
-        ("Vital Clarity",        "RESTORE_CLARITY", 80,   0,   25,  0,   3,   65),
-        ("Mind and Blade",       "SURGE_CLARITY",   0,    15,  15,  0,   3,   50),
-        ("Grand Elixir",         "SURGE_CLARITY",   0,    30,  30,  0,   5,   90),
+        # name                  type              heal%  hit  crit  def  dur  price
+        ("Minor Restore",      "RESTORE",          15,    0,   0,   0,   1,   10),
+        ("Restore",            "RESTORE",          30,    0,   0,   0,   1,   20),
+        ("Major Restore",      "RESTORE",          60,    0,   0,   0,   1,   40),
+        ("Minor Surge",        "SURGE",             0,    8,   0,   0,   3,   15),
+        ("Surge",              "SURGE",             0,   18,   0,   0,   3,   30),
+        ("Major Surge",        "SURGE",             0,   35,   0,   0,   5,   55),
+        ("Minor Clarity",      "CLARITY",           0,    0,   8,   0,   3,   15),
+        ("Clarity",            "CLARITY",           0,    0,  18,   0,   3,   30),
+        ("Major Clarity",      "CLARITY",           0,    0,  35,   0,   5,   55),
+        ("Minor Barrier",      "BARRIER",           0,    0,   0,  200,   3,   15),
+        ("Barrier",            "BARRIER",           0,    0,   0,  460,   3,   30),
+        ("Major Barrier",      "BARRIER",           0,    0,   0,  960,   5,   55),
+        ("Mending Surge",      "RESTORE_SURGE",    20,   12,   0,   0,   3,   35),
+        ("Vital Surge",        "RESTORE_SURGE",    40,   25,   0,   0,   3,   65),
+        ("Mending Clarity",    "RESTORE_CLARITY",  20,    0,  12,   0,   3,   35),
+        ("Vital Clarity",      "RESTORE_CLARITY",  40,    0,  25,   0,   3,   65),
+        ("Mind and Blade",     "SURGE_CLARITY",     0,   15,  15,   0,   3,   50),
+        ("Grand Elixir",       "SURGE_CLARITY",     0,   30,  30,   0,   5,   90),
     ]
 
 
@@ -750,22 +908,31 @@ def apply_potion(player_id: int, potion_name: str):
     if potion_name not in pool:
         return {}
 
-    _, ptype, heal, bhit, bwis, bdef, dur, _ = pool[potion_name]
+    _, ptype, heal_pct, bhit, bcrit, bdef, dur, _ = pool[potion_name]
     result = {}
 
-    if heal > 0:
+    if heal_pct > 0:
+        c.execute("SELECT max_hp FROM player_stats WHERE player_id = ?", (player_id,))
+        max_hp = c.fetchone()["max_hp"]
+        heal = max(1, int(max_hp * heal_pct / 100))
         c.execute("""
             UPDATE player_stats SET current_hp = MIN(current_hp + ?, max_hp) WHERE player_id = ?
         """, (heal, player_id))
         result["heal"] = heal
 
     if bhit > 0:
-        c.execute("UPDATE player_stats SET bonus_hit = bonus_hit + ? WHERE player_id = ?", (bhit, player_id))
-        result["bonus_hit"] = bhit
+        c.execute("SELECT base_hit FROM player_stats WHERE player_id = ?", (player_id,))
+        base_hit = c.fetchone()["base_hit"]
+        gain = max(1, int(base_hit * bhit / 100))
+        c.execute("UPDATE player_stats SET bonus_hit = bonus_hit + ? WHERE player_id = ?", (gain, player_id))
+        result["bonus_hit"] = gain
 
-    if bwis > 0:
-        c.execute("UPDATE player_stats SET bonus_wisdom = bonus_wisdom + ? WHERE player_id = ?", (bwis, player_id))
-        result["bonus_wisdom"] = bwis
+    if bcrit > 0:
+        c.execute("SELECT base_crit FROM player_stats WHERE player_id = ?", (player_id,))
+        base_crit = c.fetchone()["base_crit"]
+        crit = max(1, int(base_crit * bcrit / 100))
+        c.execute("UPDATE player_stats SET bonus_crit = bonus_crit + ? WHERE player_id = ?", (crit, player_id))
+        result["bonus_crit"] = crit
 
     if bdef > 0:
         result["defense"] = bdef
@@ -784,29 +951,32 @@ def enemy_drop_potion(player_id: int):
     return chosen[0]
 
 
+ENEMY_PROFILES = {
+    "Corrupted Index": {"hp_mult": 1.2, "hit_mult": 0.8, "xp_mult": 1.0},  # tanky, slow
+    "Null Pointer":    {"hp_mult": 0.7, "hit_mult": 1.4, "xp_mult": 1.1},  # glass cannon
+    "Stack Overflow":  {"hp_mult": 1.0, "hit_mult": 1.2, "xp_mult": 1.2},  # aggressive
+    "Deadlock Wraith": {"hp_mult": 0.9, "hit_mult": 0.9, "xp_mult": 0.9},  # balanced, low reward
+    "Zombie Process":  {"hp_mult": 1.5, "hit_mult": 0.6, "xp_mult": 0.8},  # very tanky, weak hits
+}
+
+BASE_ENEMY_HP  = 60   # HP at level 1 before profile multiplier
+BASE_ENEMY_HIT = 10   # hit at level 1 before profile multiplier
+HP_PER_LEVEL   = 15
+HIT_PER_LEVEL  = 3
+
 def generate_enemy(player_id: int, is_boss: bool = False):
-    c.execute("""
-        SELECT p.level, ps.max_hp, ps.base_hit + ps.bonus_hit AS total_hit
-        FROM players p
-        JOIN player_stats ps ON ps.player_id = p.id
-        WHERE p.id = ?
-    """, (player_id,))
-    row = c.fetchone()
-    player_level = row["level"]
-    player_hp    = row["max_hp"]
-    player_hit   = row["total_hit"]
+    c.execute("SELECT level FROM players WHERE id = ?", (player_id,))
+    player_level = c.fetchone()["level"]
 
-    enemy_types = ["Corrupted Index", "Null Pointer", "Stack Overflow", "Deadlock Wraith", "Zombie Process"]
-    enemy_type  = random.choice(enemy_types)
+    enemy_type = random.choice(list(ENEMY_PROFILES.keys()))
+    profile    = ENEMY_PROFILES[enemy_type]
 
-    target_rounds_to_die  = random.randint(5, 8)
-    target_rounds_to_kill = random.randint(6, 24)
     hp_variance  = random.uniform(0.88, 1.12)
     hit_variance = random.uniform(0.88, 1.12)
-    avg_player_dmg = player_hit * 1.0
-    base_hp  = max(40, int((avg_player_dmg * target_rounds_to_die  * hp_variance)  * 0.5))
-    base_hit = max(8,  int(((player_hp / target_rounds_to_kill)    * hit_variance) * 0.5))
-    experience_drop = 20 + (player_level * 5) + random.randint(-5, 5)
+
+    base_hp  = max(40, int((BASE_ENEMY_HP  + HP_PER_LEVEL  * (player_level - 1)) * profile["hp_mult"]  * hp_variance))
+    base_hit = max(8,  int((BASE_ENEMY_HIT + HIT_PER_LEVEL * (player_level - 1)) * profile["hit_mult"] * hit_variance))
+    experience_drop = int((20 + player_level * 5 + random.randint(-5, 5)) * profile["xp_mult"])
 
     if is_boss:
         base_hp  = int(base_hp  * 3.5)
@@ -863,7 +1033,7 @@ def reconnect():
 def experience_needed_for_next_level(current_level: int):
     if current_level < 1:
         return 100
-    return 100 + (current_level - 1) * 50
+    return int(100 * (1.4 ** (current_level - 1)))
 
 
 def level_up(player_id: int):
@@ -875,7 +1045,7 @@ def level_up(player_id: int):
 
     hp_increase      = 20
     hit_increase     = 5
-    wisdom_increase  = 3
+    crit_increase  = 3
 
     if current_experience < experience_needed_for_next_level(current_level):
         raise ValueError("Not enough experience to level up")
@@ -889,10 +1059,10 @@ def level_up(player_id: int):
             max_hp       = max_hp       + ?,
             current_hp   = MIN(current_hp + ?, max_hp + ?),
             base_hit     = base_hit     + ?,
-            base_wisdom  = base_wisdom  + ?
+            base_crit  = base_crit  + ?
         WHERE player_id = ?
     """, (hp_increase, hp_increase, hp_increase, hp_increase,
-          hit_increase, wisdom_increase, player_id))
+          hit_increase, crit_increase, player_id))
     conn.commit()
     print(f"\nlevel up! ({current_level} -> {new_level})")
 
@@ -906,7 +1076,7 @@ EVENT_EXPIRY_ENCOUNTERS = 10
 
 CONSTRAINT_EVENTS = [
     ("blood_moon",    "BLOOD MOON",    "All enemies strike with doubled force."),
-    ("solar_eclipse", "SOLAR ECLIPSE", "The Indexer's wisdom surges to new heights."),
+    ("solar_eclipse", "SOLAR ECLIPSE", "The Indexer's crit surges to new heights."),
     ("flood_omnya",   "FLOOD OF OMNYA","Certain paths are swallowed by rising waters."),
     ("monster_rush",  "MONSTER RUSH",  "Each enemy strikes an additional time."),
     ("fateful_day",   "FATEFUL DAY",   "Rare treasures surface in every market."),
@@ -963,3 +1133,104 @@ def apply_event_combat_modifiers(enemy_id: int, events: dict):
     if events.get("monster_rush"):
         # monster_rush handled in enemy_turn; nothing to bake into the row
         pass
+
+def apply_status(player_id: int, effect: str, duration: int):
+    c.execute("""
+        INSERT INTO status_effects (player_id, effect, duration) VALUES (?, ?, ?)
+    """, (player_id, effect, duration))
+    conn.commit()
+
+def get_statuses(player_id: int):
+    c.execute("SELECT effect, duration FROM status_effects WHERE player_id = ?", (player_id,))
+    return c.fetchall()
+
+def tick_statuses(player_id: int):
+    """Decrement durations, remove expired, apply CORRUPTION DoT. Returns log lines."""
+    c.execute("SELECT rowid, effect, duration FROM status_effects WHERE player_id = ?", (player_id,))
+    rows = c.fetchall()
+    log = []
+    for row in rows:
+        if row["effect"] == "CORRUPTION":
+            c.execute("SELECT max_hp FROM player_stats WHERE player_id = ?", (player_id,))
+            max_hp = c.fetchone()["max_hp"]
+            dot = max(1, int(max_hp * 0.05))
+            c.execute("UPDATE player_stats SET current_hp = MAX(1, current_hp - ?) WHERE player_id = ?",
+                      (dot, player_id))
+            log.append(f"CORRUPTION burns you for {dot} damage.")
+        if row["effect"] == "SEGFAULT":
+            stat = random.choice(["bonus_hit", "bonus_crit"])
+            drain = random.randint(1, 5)
+            c.execute(f"UPDATE player_stats SET {stat} = MAX(0, {stat} - ?) WHERE player_id = ?",
+                      (drain, player_id))
+            log.append(f"SEGFAULT drains {drain} {stat.replace('bonus_', '')}.")
+        new_dur = row["duration"] - 1
+        if new_dur <= 0:
+            c.execute("DELETE FROM status_effects WHERE rowid = ?", (row["rowid"],))
+            log.append(f"{row['effect']} fades.")
+        else:
+            c.execute("UPDATE status_effects SET duration = ? WHERE rowid = ?", (new_dur, row["rowid"]))
+    conn.commit()
+    return log
+
+def is_first_launch() -> bool:
+    c.execute("SELECT value FROM meta WHERE key = 'intro_shown'")
+    return c.fetchone() is None
+
+def mark_intro_shown():
+    c.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('intro_shown', '1')")
+    conn.commit()
+
+
+def init_node_flavour():
+    c.execute("SELECT COUNT(*) FROM node_flavour")
+    if c.fetchone()[0] > 0:
+        return
+    lines = [
+        # TRANSACTION (0)
+        (0, "the merchant's eyes flicker like a cursor awaiting input."),
+        (0, "goods change hands. the economy persists."),
+        (0, "a traveling vendor. their wares update each visit."),
+        # QUERY (1)
+        (1, "something has detected your process. it does not yield."),
+        (1, "hostile threads converge. execution is contested."),
+        (1, "a query fires. the answer is violence."),
+        # STORED_PROCEDURE (2)
+        (2, "the dungeon runs a fixed routine. each room, scripted."),
+        (2, "these walls remember every traveler. none have changed them."),
+        (2, "a procedure locked in place long before you arrived."),
+        # DEADLOCK (3)
+        (3, "two forces hold each other in permanent contention."),
+        (3, "neither will release. neither can advance. you are the variable."),
+        (3, "a stalemate older than the current schema."),
+        # CONSTRAINT (4)
+        (4, "the world enforces its rules here. violation is painful."),
+        (4, "a foreign key tangle. the paths resist traversal."),
+        (4, "something fundamental shifts as you enter."),
+        # OVERFLOW (5)
+        (5, "the air thickens. the logs show something massive."),
+        (5, "an OVERFLOW event. the stack cannot contain what lives here."),
+        (5, "this is where corrupted processes come to grow beyond bounds."),
+        # REST (6)
+        (6, "a savepoint. the system breathes."),
+        (6, "rollback is possible here, if only for a moment."),
+        (6, "the noise fades. your process stabilizes."),
+    ]
+    c.executemany("INSERT INTO node_flavour (encounter_type, line) VALUES (?, ?)", lines)
+    conn.commit()
+
+def get_node_flavour(encounter_type: int) -> str:
+    c.execute("""
+        SELECT line FROM node_flavour WHERE encounter_type = ?
+        ORDER BY RANDOM() LIMIT 1
+    """, (encounter_type,))
+    row = c.fetchone()
+    return row["line"] if row else ""
+
+def record_overflow_kill(player_id: int) -> int:
+    """Increment overflow kill count. Returns new total."""
+    c.execute("UPDATE players SET overflow_kills = overflow_kills + 1 WHERE id = ?", (player_id,))
+    conn.commit()
+    c.execute("SELECT overflow_kills FROM players WHERE id = ?", (player_id,))
+    return c.fetchone()["overflow_kills"]
+
+OVERFLOW_BOSSES_TOTAL = 5  # Warlord, Tyrant, Behemoth, Archmage, Overseer
