@@ -4,4 +4,4 @@ __pycache__/
 *.pyd
 .venv/
 venv/
-game_data.db
+*.db
