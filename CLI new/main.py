@@ -422,7 +422,7 @@ def _handle_run_clear(player_id):
         if skip(): disable_cbreak(); return total_clears
         time.sleep(0.5)
         typewrite("1..2..3..done!")
-        time.sleep(0,5)
+        time.sleep(0.5)
         disable_cbreak()
         input("\n  press enter to start again!")
 
