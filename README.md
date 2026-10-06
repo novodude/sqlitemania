@@ -1,6 +1,5 @@
 # SQLite Mania — A Terminal RPG
 
-#### Video Demo: [demo on youtube](https://youtu.be/YdLxNPEmXkk)
 
 #### Description
 
